@@ -25,7 +25,7 @@ class DriveAwayPigeons:
         self.areas_cnt = self.split_w * self.split_h
         self.angle_prec = angle_prec
         self.laser_pin = 18
-        self.can_sweep = False
+        self.can_delect, self.can_sweep = False, False
         self.cap = cv2.VideoCapture(0)
         self.cap_ratio = \
             self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) \
@@ -33,8 +33,9 @@ class DriveAwayPigeons:
         self.split_line_color = (0x00, 0xFF, 0x00)
         self.areas_canter_color = (0x00, 0x00, 0xFF)
         
-        self.darknet_net, self.darknet_meta = None, None
-        self.darknet_net_w, self.darknet_net_h = 0, 0
+        self.darknet_net, self.darknet_net_w, self.darknet_net_h = None, 0, 0
+        self.darknet_meta, self.darknet_img = None, None
+        
         self.showing_w, self.showing_h = 0, 0
         self.areas_angle = [[{}]]
         self.sweep_around_times = 0
@@ -42,6 +43,7 @@ class DriveAwayPigeons:
         
         self.arm = self.set_arm()
         self.init_darknet()
+        self.init_laser()
         
         self.thd_delecting = threading.Thread(target=self.thd_delecting_func)
         self.thd_deciding = threading.Thread(target=self.thd_deciding_func)
@@ -50,13 +52,15 @@ class DriveAwayPigeons:
         self.que_deciding = queue.Queue(1)
         self.que_sweeping = queue.Queue(1)
         self.que_showing = queue.Queue(1)
+        self.thd_showing.start()
+        
+        self.init_areas_angle()
+        
         self.thd_delecting.start()
         self.thd_deciding.start()
         self.thd_sweeping.start()
-        self.thd_showing.start()
         
-        self.init_laser()
-        self.init_areas_angle()
+        self.thd_delecting.join()
     
     def __del__(self):
         GPIO.cleanup()
@@ -67,9 +71,11 @@ class DriveAwayPigeons:
         meta_path = "./cfg/pigeon.data"
         self.darknet_net = darknet.load_net_custom(config_path.encode(
             "ascii"), weight_path.encode("ascii"), 0, 1)
-        self.darknet_meta = darknet.load_meta(meta_path.encode("ascii"))
         self.darknet_net_w = darknet.network_width(self.darknet_net)
         self.darknet_net_h = darknet.network_height(self.darknet_net)
+        self.darknet_meta = darknet.load_meta(meta_path.encode("ascii"))
+        self.darknet_img = darknet.make_image(
+            self.darknet_net_w, self.darknet_net_h, 3)
         self.showing_h = min(self.darknet_net_w, self.darknet_net_h)
         self.showing_w = self.showing_h * self.cap_ratio
     
@@ -205,24 +211,32 @@ class DriveAwayPigeons:
         return img
     
     def thd_delecting_func(self):
+        self.can_delect = True
         while True:
-            pass
+            pass  # TODO
     
     def thd_deciding_func(self):
         while True:
-            pass
+            pass  # TODO
     
     def thd_sweeping_func(self):
+        self.can_sweep = True
         while True:
             if not self.can_sweep:
                 continue
-            area_x, area_y = self.que_sweeping.get(True)
+            area_x, area_y = self.que_sweeping.get()
             self.sweep_area(area_x, area_y)
     
     def thd_showing_func(self):
         while True:
-            img = self.get_cap_img()
-            img = self.draw_split_lines_and_areas_canter(img)
+            img = None
+            if not self.can_delect:
+                img = self.get_cap_img()
+                img = self.draw_split_lines_and_areas_canter(img)
+            else:
+                delected_areas, sweeping_area, ignored_areas, fps = \
+                    self.que_showing.get()
+                # TODO
             cv2.imshow("image", img)
             cv2.waitKey(1)
 
@@ -233,7 +247,11 @@ def main():
         split_w, split_h = int(sys.argv[1]), int(sys.argv[1])
     elif len(sys.argv) >= 3:
         split_w, split_h = int(sys.argv[1]), int(sys.argv[2])
-    DriveAwayPigeons(split_w, split_h, 1.0)
+    d = None
+    try:
+        d = DriveAwayPigeons(split_w, split_h, 1.0)
+    except KeyboardInterrupt:
+        del d
 
 
 if __name__ == '__main__':
