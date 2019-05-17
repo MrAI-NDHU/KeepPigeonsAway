@@ -1,9 +1,9 @@
+from queue import Queue
+from threading import Thread
 from typing import Any
 import logging
 import pickle
-import queue
 import sys
-import threading
 import time
 
 from Jetson import GPIO
@@ -14,8 +14,6 @@ from servo import Servo
 from servo.controller import ControllerForPCA9685
 import darknet
 
-TEST_MODE = True
-
 
 class DriveAwayPigeons:
     Y, X = "y", "x"
@@ -25,7 +23,7 @@ class DriveAwayPigeons:
         self.areas_cnt = self.split_w * self.split_h
         self.angle_prec = angle_prec
         self.laser_pin = 18
-        self.can_delect, self.can_sweep = False, False
+        self.can_detect, self.can_sweep = False, False
         self.cap = cv2.VideoCapture(0)
         self.cap_ratio = \
             self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) \
@@ -45,22 +43,22 @@ class DriveAwayPigeons:
         self.init_darknet()
         self.init_laser()
         
-        self.thd_delecting = threading.Thread(target=self.thd_delecting_func)
-        self.thd_deciding = threading.Thread(target=self.thd_deciding_func)
-        self.thd_sweeping = threading.Thread(target=self.thd_sweeping_func)
-        self.thd_showing = threading.Thread(target=self.thd_showing_func)
-        self.que_deciding = queue.Queue(1)
-        self.que_sweeping = queue.Queue(1)
-        self.que_showing = queue.Queue(1)
+        self.thd_detecting = Thread(target=self.thd_detecting_func)
+        self.thd_deciding = Thread(target=self.thd_deciding_func)
+        self.thd_sweeping = Thread(target=self.thd_sweeping_func)
+        self.thd_showing = Thread(target=self.thd_showing_func)
+        self.que_deciding = Queue(1)
+        self.que_sweeping = Queue(1)
+        self.que_showing = Queue(1)
         self.thd_showing.start()
         
         self.init_areas_angle()
         
-        self.thd_delecting.start()
+        self.thd_detecting.start()
         self.thd_deciding.start()
         self.thd_sweeping.start()
         
-        self.thd_delecting.join()
+        self.thd_detecting.join()
     
     def __del__(self):
         GPIO.cleanup()
@@ -210,19 +208,32 @@ class DriveAwayPigeons:
                 img = cv2.circle(img, (x, y), 2, self.areas_canter_color, 1)
         return img
     
-    def thd_delecting_func(self):
-        self.can_delect = True
+    def thd_detecting_func(self):
+        self.can_detect = True
         while True:
-            pass  # TODO
+            detections = None
+            # TODO
+            self.que_deciding.put(detections)
+            pass
     
     def thd_deciding_func(self):
         while True:
-            pass  # TODO
+            detections = self.que_deciding.get()
+            # TODO
+            # time.sleep(0.01)  # if high cpu usage
+            area_x, area_y = None, None
+            detected_areas, sweeping_area, ignored_areas, fps = \
+                None, None, None, None
+            self.que_sweeping.put((area_x, area_y))
+            self.que_showing.put(
+                (detected_areas, sweeping_area, ignored_areas, fps))
+            pass
     
     def thd_sweeping_func(self):
         self.can_sweep = True
         while True:
             if not self.can_sweep:
+                time.sleep(0.01)  # avoid high CPU usage
                 continue
             area_x, area_y = self.que_sweeping.get()
             self.sweep_area(area_x, area_y)
@@ -230,15 +241,18 @@ class DriveAwayPigeons:
     def thd_showing_func(self):
         while True:
             img = None
-            if not self.can_delect:
+            if not self.can_detect:
                 img = self.get_cap_img()
                 img = self.draw_split_lines_and_areas_canter(img)
             else:
-                delected_areas, sweeping_area, ignored_areas, fps = \
+                detected_areas, sweeping_area, ignored_areas, fps = \
                     self.que_showing.get()
                 # TODO
             cv2.imshow("image", img)
             cv2.waitKey(1)
+
+
+TEST_MODE = True
 
 
 def main():
