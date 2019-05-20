@@ -33,10 +33,10 @@ class DriveAwayPigeons:
         self.is_inited = False
         self.split_w, self.split_h = split_w, split_h
         self.angle_prec = angle_prec
-        self.laser_pin = 18
+        self.laser_pin, self.servo_x_ch, self.servo_y_ch = 18, 1, 0
         self.sweeps_limit, self.errors_limit = 4, 4
         self.cap = cv2.VideoCapture(0)
-        self.cap_ratio = 16 / 9
+        self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
         self.showing_w, self.showing_h = 1280, 720
         self.area_normal_color = (0x00, 0xFF, 0x00)  # green
@@ -113,10 +113,10 @@ class DriveAwayPigeons:
     def get_arm(self) -> ControllerForPCA9685:
         mg995_sec_per_angle = \
             ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
-        mg995_tilt = Servo(0.0, 180.0, 150.0, 510.0, 50.0, mg995_sec_per_angle)
         mg995_pan = Servo(0.0, 180.0, 180.0, 630.0, 50.0, mg995_sec_per_angle)
-        servos = {Y: mg995_tilt, X: mg995_pan}
-        chs = {Y: 0, X: 1}
+        mg995_tilt = Servo(0.0, 180.0, 150.0, 510.0, 50.0, mg995_sec_per_angle)
+        servos = {X: mg995_pan, Y: mg995_tilt}
+        chs = {X: self.servo_x_ch, Y: self.servo_y_ch}
         return ControllerForPCA9685(servos, chs, 60.0)
     
     def get_areas_rect(self) -> [[Dict[str, Number]]]:
