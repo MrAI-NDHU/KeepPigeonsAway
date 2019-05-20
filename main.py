@@ -24,7 +24,7 @@ Number = TypeVar("Number", int, float)
 X, Y = "x", "y"
 X1, Y1, X2, Y2 = "x1", "y1", "x2", "y2",
 CX, CY, AX, AY, R = "cx", "cy", "ax", "ay", "r"
-N, D, E = 0, 1, 2
+N, D, S = 0, 1, 2
 
 
 class DriveAwayPigeons:
@@ -203,8 +203,8 @@ class DriveAwayPigeons:
                 self.area_angle_spacing[Y] = max(
                     abs(area1_y - area0_y), self.area_angle_spacing[Y])
     
-    def sweep_area(self, area_x: int, area_y: int):
-        area_angle = self.areas_angle[area_y][area_x]
+    def sweep_area(self, ax: int, ay: int):
+        area_angle = self.areas_angle[ay][ax]
         x = random.uniform(
             area_angle[X] - self.area_angle_spacing[X] / 2,
             area_angle[X] + self.area_angle_spacing[X] / 2)
@@ -231,18 +231,21 @@ class DriveAwayPigeons:
                     areas_status = self.areas_status
                 if areas_status[ay][ax] == N:
                     color = self.area_normal_color
-                elif areas_status[ay][ax] == D:
-                    color = self.area_detected_color
-                    cv2.putText(img, str(areas_sweeps[ay][ax]),
-                                (rect[X1] + padding,
-                                 rect[Y2] - padding - size // 2),
-                                self.font, 0.5, color, 1, cv2.LINE_AA)
                 else:
-                    color = self.area_error_color
-                    cv2.putText(img, str(areas_errors[ay][ax]),
-                                (rect[X1] + padding,
-                                 rect[Y2] - padding - size // 2),
-                                self.font, 0.5, color, 1, cv2.LINE_AA)
+                    color = self.area_detected_color
+                    if areas_status[ay][ax] == S:
+                        c = (int(round(rect[CX])), int(round(rect[CY])))
+                        cv2.circle(img, c, 8, self.area_canter_color, 1)
+                        cv2.putText(img, str(areas_sweeps[ay][ax]),
+                                    (rect[X1] + padding,
+                                     rect[Y2] - padding - size // 2),
+                                    self.font, 0.5, color, 1, cv2.LINE_AA)
+                        if areas_errors[ay][ax] > 0:
+                            color = self.area_error_color
+                            cv2.putText(img, str(areas_errors[ay][ax]),
+                                        (rect[X2] - padding - size // 2,
+                                         rect[Y2] - padding - size // 2),
+                                        self.font, 0.5, color, 1, cv2.LINE_AA)
                 cv2.rectangle(img, (rect[X1], rect[Y1]),
                               (rect[X2], rect[Y2]), color, 1)
                 cv2.putText(img, i_str, (rect[X1] + padding,
@@ -309,25 +312,73 @@ class DriveAwayPigeons:
             self.que_deciding.put((detections_raw, fps))
     
     def thd_deciding_func(self):
+        sweeping_ax, sweeping_ay = -1, -1
         while True:
             detections_raw, fps = self.que_deciding.get()
             detections = self.trans_detections(detections_raw)
-            area_x, area_y = -1, -1
+            areas = set()
             for d in detections:
-                # TODO
-                pass
-            self.que_sweeping.put((area_x, area_y))
+                areas.add((d[AX], d[AY]))
+            if len(areas) == 0:
+                sweeping_ax, sweeping_ay = -1, -1
+            else:
+                def random_choice(old_ax: int = -1,
+                                  old_ay: int = -1) -> (int, int):
+                    candidate = list(areas)
+                    if old_ax >= 0 and old_ay >= 0:
+                        candidate.remove((old_ax, old_ay))
+                    new_ax, new_ay = random.choice(candidate)
+                    self.areas_status[new_ay][new_ax] = S
+                    self.areas_sweeps[new_ay][new_ax] = 1
+                    self.areas_errors[new_ay][new_ax] = 0
+                    return new_ax, new_ay
+                
+                if sweeping_ax < 0 or sweeping_ay < 0:
+                    sweeping_ax, sweeping_ay = random_choice()
+                else:
+                    if (sweeping_ax, sweeping_ay) in areas:
+                        if self.areas_errors[sweeping_ay][sweeping_ax] > 0:
+                            self.areas_errors[sweeping_ay][sweeping_ax] = 0
+                        self.areas_sweeps[sweeping_ay][sweeping_ax] += 1
+                        if self.areas_sweeps[sweeping_ay][sweeping_ax] > \
+                                self.sweeps_limit:
+                            sweeping_ax, sweeping_ay = \
+                                random_choice(sweeping_ax, sweeping_ay)
+                    else:
+                        self.areas_errors[sweeping_ay][sweeping_ax] += 1
+                        if self.areas_errors[sweeping_ay][sweeping_ax] > \
+                                self.errors_limit:
+                            sweeping_ax, sweeping_ay = \
+                                random_choice(sweeping_ax, sweeping_ay)
+            for ay in range(0, self.split_h):
+                for ax in range(0, self.split_w):
+                    if (ax, ay) in areas:
+                        if ax != sweeping_ax and ay != sweeping_ay:
+                            self.areas_status[ay][ax] = D
+                            self.areas_sweeps[ay][ax] = 0
+                            self.areas_errors[ay][ax] = 0
+                    else:
+                        self.areas_status[ay][ax] = N
+                        self.areas_sweeps[ay][ax] = 0
+                        self.areas_errors[ay][ax] = 0
+            self.que_sweeping.put((sweeping_ax, sweeping_ay))
             self.que_showing.put(
                 (self.areas_status.copy(), self.areas_sweeps.copy(),
                  self.areas_errors.copy(), fps))
     
     def thd_sweeping_func(self):
-        area_x, area_y = -1, -1
+        sweeping_ax, sweeping_ay = -1, -1
         while True:
             if not self.que_sweeping.empty():
-                area_x, area_y = self.que_sweeping.get()
-            if area_x >= 0 and area_y >= 0:
-                self.sweep_area(area_x, area_y)
+                ax, ay = self.que_sweeping.get()
+                if sweeping_ax != ax or sweeping_ay != ay:
+                    self.close_laser()
+                    if ax >= 0 and ay >= 0:
+                        self.arm.rotate(self.areas_angle[ay][ax], False)
+                    sweeping_ax, sweeping_ay = ax, ay
+            if sweeping_ax >= 0 and sweeping_ay >= 0:
+                self.open_laser()
+                self.sweep_area(sweeping_ax, sweeping_ay)
             else:
                 time.sleep(0.01)  # avoid high CPU usage
     
