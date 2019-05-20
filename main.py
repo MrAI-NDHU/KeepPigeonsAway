@@ -30,12 +30,10 @@ N, D, S = 0, 1, 2
 class DriveAwayPigeons:
     
     def __init__(self, split_w: int, split_h: int, angle_prec: float):
-        self.is_inited = False
         self.split_w, self.split_h = split_w, split_h
         self.angle_prec = angle_prec
         self.laser_pin, self.servo_x_ch, self.servo_y_ch = 18, 1, 0
         self.sweeps_limit, self.errors_limit = 4, 4
-        self.cap = cv2.VideoCapture(0)
         self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
         self.showing_w, self.showing_h = 1280, 720
@@ -60,6 +58,9 @@ class DriveAwayPigeons:
         self.que_deciding = Queue(1)
         self.que_sweeping = Queue(1)
         self.que_showing = Queue(1)
+
+        self.is_started_detecting = False
+        self.cap = cv2.VideoCapture(0)
         self.thd_showing.start()
         
         self.areas_angle = [[{}]]
@@ -69,7 +70,6 @@ class DriveAwayPigeons:
         self.darknet_net, self.darknet_net_w, self.darknet_net_h = None, 0, 0
         self.darknet_meta, self.darknet_img = None, None
         self.init_darknet()
-        self.is_inited = True
         
         self.thd_detecting.start()
         self.thd_deciding.start()
@@ -300,6 +300,7 @@ class DriveAwayPigeons:
         return detections
     
     def thd_detecting_func(self):
+        self.is_started_detecting = True
         while True:
             begin_time = time.time()
             img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
@@ -375,6 +376,8 @@ class DriveAwayPigeons:
                     self.close_laser()
                     if ax >= 0 and ay >= 0:
                         self.arm.rotate(self.areas_angle[ay][ax], False)
+                    else:
+                        self.arm.rotate({X: 90.0, Y: 90.0}, False)
                     sweeping_ax, sweeping_ay = ax, ay
             if sweeping_ax >= 0 and sweeping_ay >= 0:
                 self.open_laser()
@@ -390,7 +393,7 @@ class DriveAwayPigeons:
             if not self.que_showing.empty():
                 areas_status, areas_sweeps, areas_errors, detections, fps = \
                     self.que_showing.get()
-            if self.is_inited:
+            if self.is_started_detecting:
                 if detections is not None:
                     self.draw_detections(img, detections)
                     self.draw_fps(img, fps)
