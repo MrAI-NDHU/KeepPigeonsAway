@@ -146,10 +146,8 @@ class DriveAwayPigeons:
                     self.arm.rotate(self.areas_angle[ay][ax], False)
                     self.open_laser()
                     time.sleep(2)
-                    self.can_sweep = True
                     for i in range(100):
                         self.sweep_area(ax, ay)
-                    self.can_sweep = False
                     self.close_laser()
     
     def init_areas_angle(self):
@@ -315,7 +313,9 @@ class DriveAwayPigeons:
             detections_raw, fps = self.que_deciding.get()
             detections = self.trans_detections(detections_raw)
             area_x, area_y = -1, -1
-            # TODO
+            for d in detections:
+                # TODO
+                pass
             self.que_sweeping.put((area_x, area_y))
             self.que_showing.put(
                 (self.areas_status.copy(), self.areas_sweeps.copy(),
