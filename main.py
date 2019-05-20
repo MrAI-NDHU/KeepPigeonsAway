@@ -1,6 +1,6 @@
 from queue import Queue
 from threading import Thread
-from typing import Any
+from typing import Any, Dict, TypeVar
 import logging
 import math
 import numpy
@@ -19,21 +19,23 @@ from servo import Servo
 from servo.controller import ControllerForPCA9685
 import darknet
 
-Y, X = "y", "x"
-Y1, X1, Y2, X2, CX, CY, A, R = "y1", "x1", "y1", "x1", "cx", "cy", "a", "r"
+Number = TypeVar("Number", int, float)
+
+X, Y = "x", "y"
+X1, Y1, X2, Y2 = "x1", "y1", "x2", "y2",
+CX, CY, AX, AY, R = "cx", "cy", "ax", "ay", "r"
 N, D, E = 0, 1, 2
 
 
 class DriveAwayPigeons:
     
     def __init__(self, split_w: int, split_h: int, angle_prec: float):
+        self.is_inited = False
         self.split_w, self.split_h = split_w, split_h
-        self.areas_cnt = self.split_w * self.split_h
         self.angle_prec = angle_prec
         self.laser_pin = 18
-        self.sweep_limit_times = 4
-        self.detect_error_times = 4
-        self.can_detect, self.can_sweep = False, False
+        self.sweeps_limit, self.errors_limit = 4, 4
+        self.can_sweep = False
         self.cap = cv2.VideoCapture(0)
         self.cap_ratio = 16 / 9
         self.font = cv2.FONT_HERSHEY_DUPLEX
@@ -45,10 +47,11 @@ class DriveAwayPigeons:
         self.area_canter_color = (0xFF, 0x00, 0xFF)  # purple
         self.others_color = (0x00, 0xFF, 0xFF)  # yellow
         
-        self.areas_rect = self.set_areas_rect()
+        self.areas_rect = self.get_areas_rect()
         self.areas_status = [[N] * self.split_w for _ in range(self.split_h)]
-        self.areas_error = [[0] * self.split_w for _ in range(self.split_h)]
-        self.arm = self.set_arm()
+        self.areas_sweeps = [[0] * self.split_w for _ in range(self.split_h)]
+        self.areas_errors = [[0] * self.split_w for _ in range(self.split_h)]
+        self.arm = self.get_arm()
         self.init_laser()
         
         self.thd_detecting = Thread(target=self.thd_detecting_func)
@@ -67,6 +70,7 @@ class DriveAwayPigeons:
         self.darknet_net, self.darknet_net_w, self.darknet_net_h = None, 0, 0
         self.darknet_meta, self.darknet_img = None, None
         self.init_darknet()
+        self.is_inited = True
         
         self.thd_detecting.start()
         self.thd_deciding.start()
@@ -107,7 +111,7 @@ class DriveAwayPigeons:
     def close_laser(self):
         GPIO.output(self.laser_pin, GPIO.LOW)
     
-    def set_arm(self) -> ControllerForPCA9685:
+    def get_arm(self) -> ControllerForPCA9685:
         mg995_sec_per_angle = \
             ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
         mg995_tilt = Servo(0.0, 180.0, 150.0, 510.0, 50.0, mg995_sec_per_angle)
@@ -116,8 +120,8 @@ class DriveAwayPigeons:
         chs = {Y: 0, X: 1}
         return ControllerForPCA9685(servos, chs, 60.0)
     
-    def set_areas_rect(self) -> [[{}]]:
-        areas_rect = [[None] * self.split_w for _ in range(self.split_h)]
+    def get_areas_rect(self) -> [[Dict[str, Number]]]:
+        areas_rect = [[{}] * self.split_w for _ in range(self.split_h)]
         aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
         for ay in range(self.split_h):
             for ax in range(self.split_w):
@@ -150,7 +154,7 @@ class DriveAwayPigeons:
                     self.close_laser()
     
     def init_areas_angle(self):
-        self.areas_angle = [[None] * self.split_w for _ in range(self.split_h)]
+        self.areas_angle = [[{}] * self.split_w for _ in range(self.split_h)]
         flush_stdin()
         filepath = input("Load areas angle: ").strip()
         if filepath != "":
@@ -188,7 +192,7 @@ class DriveAwayPigeons:
     
     def init_sweep_attrs(self):
         self.area_angle_spacing = {X: 0.0, Y: 0.0}
-        for i in range(1, self.areas_cnt):
+        for i in range(1, self.split_w * self.split_h):
             ax1, ay1 = i % self.split_w, i // self.split_w
             ax0, ay0 = (i - 1) % self.split_w, (i - 1) // self.split_w
             if ax1 > ax0:
@@ -220,20 +224,27 @@ class DriveAwayPigeons:
         return cv2.resize(img, (w, h),
                           interpolation=cv2.INTER_LINEAR)
     
-    def draw_areas(self, img: numpy.ndarray, has_canter: bool = False):
+    def draw_areas(self, img: numpy.ndarray, areas_status: [[int]] = None,
+                   areas_sweeps: [[int]] = None, areas_errors: [[int]] = None,
+                   has_canter: bool = False):
         padding, size = 2, 20
         for ay in range(0, self.split_h):
             for ax in range(0, self.split_w):
                 i_str = str(ay * self.split_w + ax)
                 rect = self.areas_rect[ay][ax]
-                if self.areas_status[ay][ax] == N:
+                if areas_status is None:
+                    areas_status = self.areas_status
+                if areas_status[ay][ax] == N:
                     color = self.area_normal_color
-                elif self.areas_status[ay][ax] == D:
+                elif areas_status[ay][ax] == D:
                     color = self.area_detected_color
+                    cv2.putText(img, str(areas_sweeps[ay][ax]),
+                                (rect[X1] + padding,
+                                 rect[Y2] - padding - size // 2),
+                                self.font, 0.5, color, 1, cv2.LINE_AA)
                 else:
                     color = self.area_error_color
-                    str(self.areas_error[ay][ax])
-                    cv2.putText(img, str(self.areas_error[ay][ax]),
+                    cv2.putText(img, str(areas_errors[ay][ax]),
                                 (rect[X1] + padding,
                                  rect[Y2] - padding - size // 2),
                                 self.font, 0.5, color, 1, cv2.LINE_AA)
@@ -252,15 +263,19 @@ class DriveAwayPigeons:
                     (self.showing_w - padding - width, 0 + padding),
                     self.font, 0.5, color, 1, cv2.LINE_AA)
     
-    def draw_detections(self, img: numpy.ndarray, detections: [{}]):
+    def draw_detections(self, img: numpy.ndarray,
+                        detections: [Dict[str, Number]]):
         color, padding, size = self.detection_color, 1, 10
         for d in detections:
             cv2.rectangle(img, (d[X1], d[Y1]), (d[Y1], d[Y2]), color, 1)
+            cx = int(round(self.areas_rect[d[AY]][d[AX]][CX]))
+            cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
+            cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
             cv2.putText(img, "{:6.2f}".format(d[R]),
                         (d[X1] + padding, d[Y1] + padding + size),
                         self.font, 0.5, color, 1, cv2.LINE_AA)
     
-    def fix_detections(self, detections: [[[Any]]]) -> [{}]:
+    def fix_detections(self, detections: [[[Any]]]) -> [Dict[str, Number]]:
         new_detections = [{} for _ in range(len(detections))]
         for i in range(len(detections)):
             d = detections[i]
@@ -268,22 +283,25 @@ class DriveAwayPigeons:
             wr = self.showing_w / self.darknet_net_w
             hr = self.showing_h / self.darknet_net_h
             x, y, w, h = d[2][0] * wr, d[2][1] * hr, d[2][2] * wr, d[2][3] * hr
-            new_detections[i][X1] = x - (w / 2)
-            new_detections[i][Y1] = x + (w / 2)
-            new_detections[i][X2] = y - (h / 2)
-            new_detections[i][Y2] = y + (h / 2)
+            new_detections[i][X1] = int(round(x - (w / 2)))
+            new_detections[i][Y1] = int(round(x + (w / 2)))
+            new_detections[i][X2] = int(round(y - (h / 2)))
+            new_detections[i][Y2] = int(round(y + (h / 2)))
+            new_detections[i][CX] = int(round(x))
+            new_detections[i][CY] = int(round(y))
             dist = sys.maxsize
             for ay in range(0, self.split_h):
                 for ax in range(0, self.split_w):
                     rect = self.areas_rect[ay][ax]
                     d2 = math.pow(rect[CX] - x, 2) + math.pow(rect[CY] - y, 2)
                     if d2 < dist:
-                        new_detections[i][A] = ay * self.split_w + ax
+                        new_detections[i][AX] = ax
+                        new_detections[i][AY] = ay
                         dist = d2
         return new_detections
     
     def thd_detecting_func(self):
-        self.can_detect = True
+        self.is_inited = True
         while True:
             begin_time = time.time()
             img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
@@ -299,37 +317,38 @@ class DriveAwayPigeons:
         while True:
             detections, fps = self.que_deciding.get()
             detections = self.fix_detections(detections)
-            
+            area_x, area_y = -1, -1
             # TODO
-            # time.sleep(0.01)  # if high cpu usage
-            area_x, area_y = None, None
-            detected_areas, sweeping_area, ignored_areas, fps = \
-                None, None, None, None
             self.que_sweeping.put((area_x, area_y))
             self.que_showing.put(
-                (detected_areas, sweeping_area, ignored_areas, fps))
-            pass
+                (self.areas_status.copy(), self.areas_sweeps.copy(),
+                 self.areas_errors.copy(), fps))
     
     def thd_sweeping_func(self):
-        self.can_sweep = True
+        area_x, area_y = -1, -1
         while True:
-            if not self.can_sweep:
+            if not self.que_sweeping.empty():
+                area_x, area_y = self.que_sweeping.get()
+            if area_x >= 0 and area_y >= 0:
+                self.sweep_area(area_x, area_y)
+            else:
                 time.sleep(0.01)  # avoid high CPU usage
-                continue
-            area_x, area_y = self.que_sweeping.get()
-            self.sweep_area(area_x, area_y)
     
     def thd_showing_func(self):
-        # detected_areas, sweeping_area, ignored_areas, fps =
+        areas_status, areas_sweeps, areas_errors, detections, fps = \
+            self.areas_status, self.areas_sweeps, self.areas_errors, None, 0.0
         while True:
-            img = None
-            if not self.can_detect:
-                img = self.get_cap_img(self.showing_w, self.showing_h)
-                self.draw_areas(img, True)
-            else:
-                detected_areas, sweeping_area, ignored_areas, fps = \
+            img = self.get_cap_img(self.showing_w, self.showing_h)
+            if not self.que_showing.empty():
+                areas_status, areas_sweeps, areas_errors, detections, fps = \
                     self.que_showing.get()
-                # TODO
+            if self.is_inited:
+                if detections is not None:
+                    self.draw_detections(img, detections)
+                    self.draw_fps(img, fps)
+                self.draw_areas(img, areas_status, areas_sweeps, areas_errors)
+            else:
+                self.draw_areas(img, has_canter=True)
             cv2.imshow("image", img)
             cv2.waitKey(1)
 
