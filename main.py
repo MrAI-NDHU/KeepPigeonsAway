@@ -35,7 +35,6 @@ class DriveAwayPigeons:
         self.angle_prec = angle_prec
         self.laser_pin = 18
         self.sweeps_limit, self.errors_limit = 4, 4
-        self.can_sweep = False
         self.cap = cv2.VideoCapture(0)
         self.cap_ratio = 16 / 9
         self.font = cv2.FONT_HERSHEY_DUPLEX
@@ -207,8 +206,6 @@ class DriveAwayPigeons:
                     abs(area1_y - area0_y), self.area_angle_spacing[Y])
     
     def sweep_area(self, area_x: int, area_y: int):
-        if not self.can_sweep:
-            return
         area_angle = self.areas_angle[area_y][area_x]
         x = random.uniform(
             area_angle[X] - self.area_angle_spacing[X] / 2,
@@ -216,8 +213,8 @@ class DriveAwayPigeons:
         y = random.uniform(
             area_angle[Y] - self.area_angle_spacing[Y] / 2,
             area_angle[Y] + self.area_angle_spacing[Y] / 2)
-        time.sleep(0.05)
         self.arm.rotate({X: x, Y: y}, False)
+        time.sleep(0.05)
     
     def get_cap_img(self, w, h) -> numpy.ndarray:
         _, img = self.cap.read()
@@ -275,48 +272,48 @@ class DriveAwayPigeons:
                         (d[X1] + padding, d[Y1] + padding + size),
                         self.font, 0.5, color, 1, cv2.LINE_AA)
     
-    def fix_detections(self, detections: [[[Any]]]) -> [Dict[str, Number]]:
-        new_detections = [{} for _ in range(len(detections))]
-        for i in range(len(detections)):
-            d = detections[i]
-            new_detections[i][R] = d[1]
+    def trans_detections(self,
+                         detections_raw: [[[Any]]]) -> [Dict[str, Number]]:
+        detections = [{} for _ in range(len(detections_raw))]
+        for i in range(len(detections_raw)):
+            d = detections_raw[i]
+            detections[i][R] = d[1]
             wr = self.showing_w / self.darknet_net_w
             hr = self.showing_h / self.darknet_net_h
             x, y, w, h = d[2][0] * wr, d[2][1] * hr, d[2][2] * wr, d[2][3] * hr
-            new_detections[i][X1] = int(round(x - (w / 2)))
-            new_detections[i][Y1] = int(round(x + (w / 2)))
-            new_detections[i][X2] = int(round(y - (h / 2)))
-            new_detections[i][Y2] = int(round(y + (h / 2)))
-            new_detections[i][CX] = int(round(x))
-            new_detections[i][CY] = int(round(y))
+            detections[i][X1] = int(round(x - (w / 2)))
+            detections[i][Y1] = int(round(x + (w / 2)))
+            detections[i][X2] = int(round(y - (h / 2)))
+            detections[i][Y2] = int(round(y + (h / 2)))
+            detections[i][CX] = int(round(x))
+            detections[i][CY] = int(round(y))
             dist = sys.maxsize
             for ay in range(0, self.split_h):
                 for ax in range(0, self.split_w):
                     rect = self.areas_rect[ay][ax]
                     d2 = math.pow(rect[CX] - x, 2) + math.pow(rect[CY] - y, 2)
                     if d2 < dist:
-                        new_detections[i][AX] = ax
-                        new_detections[i][AY] = ay
+                        detections[i][AX] = ax
+                        detections[i][AY] = ay
                         dist = d2
-        return new_detections
+        return detections
     
     def thd_detecting_func(self):
-        self.is_inited = True
         while True:
             begin_time = time.time()
             img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
             cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             darknet.copy_image_from_bytes(self.darknet_img, img.tobytes())
-            detections = darknet.detect_image(self.darknet_net,
-                                              self.darknet_meta,
-                                              self.darknet_img, thresh=0.25)
+            detections_raw = darknet.detect_image(
+                self.darknet_net, self.darknet_meta,
+                self.darknet_img, thresh=0.25)
             fps = 1 / (time.time() - begin_time)
-            self.que_deciding.put((detections, fps))
+            self.que_deciding.put((detections_raw, fps))
     
     def thd_deciding_func(self):
         while True:
-            detections, fps = self.que_deciding.get()
-            detections = self.fix_detections(detections)
+            detections_raw, fps = self.que_deciding.get()
+            detections = self.trans_detections(detections_raw)
             area_x, area_y = -1, -1
             # TODO
             self.que_sweeping.put((area_x, area_y))
