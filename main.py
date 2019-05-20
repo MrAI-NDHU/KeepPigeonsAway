@@ -4,10 +4,10 @@ from typing import Any, Dict, TypeVar
 import logging
 import math
 import numpy
-import os
+# import os
 import pickle
 import random
-import select
+# import select
 import sys
 import time
 import termios
@@ -152,7 +152,7 @@ class DriveAwayPigeons:
                                  .format(n, self.areas_angle[ay][ax]))
                     self.arm.rotate(self.areas_angle[ay][ax], False)
                     self.open_laser()
-                    time.sleep(2)
+                    time.sleep(1)
                     for i in range(100):
                         self.sweep_area(ax, ay)
                     self.close_laser()
