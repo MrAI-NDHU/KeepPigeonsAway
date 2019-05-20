@@ -10,6 +10,7 @@ import random
 import select
 import sys
 import time
+import termios
 
 from Jetson import GPIO
 import cv2
@@ -33,10 +34,10 @@ class DriveAwayPigeons:
         self.split_w, self.split_h = split_w, split_h
         self.angle_prec = angle_prec
         self.laser_pin, self.servo_x_ch, self.servo_y_ch = 18, 1, 0
-        self.sweeps_limit, self.errors_limit = 4, 4
+        self.sweeps_limit, self.errors_limit = 36, 12
         self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
-        self.showing_w, self.showing_h = 1280, 720
+        self.showing_w, self.showing_h = 854, 480
         self.area_normal_color = (0x00, 0xFF, 0x00)  # green
         self.area_detected_color = (0xFF, 0x00, 0x00)  # blue
         self.area_error_color = (0x00, 0x00, 0xFF)  # red
@@ -45,9 +46,9 @@ class DriveAwayPigeons:
         self.others_color = (0x00, 0xFF, 0xFF)  # yellow
         
         self.areas_rect = self.get_areas_rect()
-        self.areas_status = [[N] * self.split_w for _ in range(self.split_h)]
-        self.areas_sweeps = [[0] * self.split_w for _ in range(self.split_h)]
-        self.areas_errors = [[0] * self.split_w for _ in range(self.split_h)]
+        self.areas_status = self.make_areas_int(N)
+        self.areas_sweeps = self.make_areas_int(0)
+        self.areas_errors = self.make_areas_int(0)
         self.arm = self.get_arm()
         self.init_laser()
         
@@ -58,7 +59,7 @@ class DriveAwayPigeons:
         self.que_deciding = Queue(1)
         self.que_sweeping = Queue(1)
         self.que_showing = Queue(1)
-
+        
         self.is_started_detecting = False
         self.cap = cv2.VideoCapture(0)
         self.thd_showing.start()
@@ -79,6 +80,12 @@ class DriveAwayPigeons:
     
     def __del__(self):
         GPIO.cleanup()
+    
+    def make_areas_int(self, n: int):
+        return [[n] * self.split_w for _ in range(self.split_h)]
+    
+    def make_areas_dict(self):
+        return [[{} for _ in range(self.split_w)] for _ in range(self.split_h)]
     
     def init_darknet(self):
         config_path = "./cfg/yolov3-tiny.cfg"
@@ -120,12 +127,12 @@ class DriveAwayPigeons:
         return ControllerForPCA9685(servos, chs, 60.0)
     
     def get_areas_rect(self) -> [[Dict[str, Number]]]:
-        areas_rect = [[{}] * self.split_w for _ in range(self.split_h)]
+        areas_rect = self.make_areas_dict()
         aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
         for ay in range(self.split_h):
             for ax in range(self.split_w):
-                x1, y1 = aw * ax, aw * ay
-                x2, y2 = aw * (ax + 1), aw * (ay + 1)
+                x1, y1 = aw * ax, ah * ay
+                x2, y2 = aw * (ax + 1) - 1, ah * (ay + 1) - 1
                 areas_rect[ay][ax][X1] = int(round(x1))
                 areas_rect[ay][ax][Y1] = int(round(y1))
                 areas_rect[ay][ax][X2] = int(round(x2))
@@ -151,7 +158,9 @@ class DriveAwayPigeons:
                     self.close_laser()
     
     def init_areas_angle(self):
-        self.areas_angle = [[{}] * self.split_w for _ in range(self.split_h)]
+        self.areas_angle = self.make_areas_dict()
+        if TEST_DETECT_ONLY:
+            return
         flush_stdin()
         filepath = input("Load areas angle: ").strip()
         if filepath != "":
@@ -189,6 +198,8 @@ class DriveAwayPigeons:
     
     def init_sweep_attrs(self):
         self.area_angle_spacing = {X: 0.0, Y: 0.0}
+        if TEST_DETECT_ONLY:
+            return
         for i in range(1, self.split_w * self.split_h):
             ax1, ay1 = i % self.split_w, i // self.split_w
             ax0, ay0 = (i - 1) % self.split_w, (i - 1) // self.split_w
@@ -204,6 +215,9 @@ class DriveAwayPigeons:
                     abs(area1_y - area0_y), self.area_angle_spacing[Y])
     
     def sweep_area(self, ax: int, ay: int):
+        if TEST_DETECT_ONLY:
+            time.sleep(0.05)
+            return
         area_angle = self.areas_angle[ay][ax]
         x = random.uniform(
             area_angle[X] - self.area_angle_spacing[X] / 2,
@@ -216,15 +230,14 @@ class DriveAwayPigeons:
     
     def get_cap_img(self, w, h) -> numpy.ndarray:
         _, img = self.cap.read()
-        return cv2.resize(img, (w, h),
-                          interpolation=cv2.INTER_LINEAR)
+        return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
     
     def draw_areas(self, img: numpy.ndarray, areas_status: [[int]] = None,
                    areas_sweeps: [[int]] = None, areas_errors: [[int]] = None,
                    has_canter: bool = False):
-        padding, size = 2, 20
-        for ay in range(0, self.split_h):
-            for ax in range(0, self.split_w):
+        padding, size = 4, 20
+        for ay in range(self.split_h):
+            for ax in range(self.split_w):
                 i_str = str(ay * self.split_w + ax)
                 rect = self.areas_rect[ay][ax]
                 if areas_status is None:
@@ -235,15 +248,16 @@ class DriveAwayPigeons:
                     color = self.area_detected_color
                     if areas_status[ay][ax] == S:
                         c = (int(round(rect[CX])), int(round(rect[CY])))
-                        cv2.circle(img, c, 8, self.area_canter_color, 1)
-                        cv2.putText(img, str(areas_sweeps[ay][ax]),
+                        cv2.circle(img, c, 4, self.area_canter_color, 1)
+                        cv2.putText(img, "{:2d}".format(areas_sweeps[ay][ax]),
                                     (rect[X1] + padding,
                                      rect[Y2] - padding - size // 2),
                                     self.font, 0.5, color, 1, cv2.LINE_AA)
                         if areas_errors[ay][ax] > 0:
                             color = self.area_error_color
-                            cv2.putText(img, str(areas_errors[ay][ax]),
-                                        (rect[X2] - padding - size // 2,
+                            cv2.putText(img,
+                                        "{:2d}".format(areas_errors[ay][ax]),
+                                        (rect[X2] - padding - size,
                                          rect[Y2] - padding - size // 2),
                                         self.font, 0.5, color, 1, cv2.LINE_AA)
                 cv2.rectangle(img, (rect[X1], rect[Y1]),
@@ -256,20 +270,20 @@ class DriveAwayPigeons:
                     cv2.circle(img, c, 4, self.area_canter_color, 1)
     
     def draw_fps(self, img: numpy.ndarray, fps: float):
-        color, padding, width = self.others_color, 1, 50
+        color, padding, width, height = self.others_color, 2, 90, 10
         cv2.putText(img, "FPS:{:5.2f}".format(fps),
-                    (self.showing_w - padding - width, 0 + padding),
+                    (self.showing_w - padding - width, 0 + padding + height),
                     self.font, 0.5, color, 1, cv2.LINE_AA)
     
     def draw_detections(self, img: numpy.ndarray,
                         detections: [Dict[str, Number]]):
         color, padding, size = self.detection_color, 1, 10
         for d in detections:
-            cv2.rectangle(img, (d[X1], d[Y1]), (d[Y1], d[Y2]), color, 1)
+            cv2.rectangle(img, (d[X1], d[Y1]), (d[X2], d[Y2]), color, 1)
             cx = int(round(self.areas_rect[d[AY]][d[AX]][CX]))
             cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
             cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
-            cv2.putText(img, "{:6.2f}".format(d[R]),
+            cv2.putText(img, "{:6.2f}%".format(d[R] * 100),
                         (d[X1] + padding, d[Y1] + padding + size),
                         self.font, 0.5, color, 1, cv2.LINE_AA)
     
@@ -283,8 +297,8 @@ class DriveAwayPigeons:
             hr = self.showing_h / self.darknet_net_h
             x, y, w, h = d[2][0] * wr, d[2][1] * hr, d[2][2] * wr, d[2][3] * hr
             detections[i][X1] = int(round(x - (w / 2)))
-            detections[i][Y1] = int(round(x + (w / 2)))
-            detections[i][X2] = int(round(y - (h / 2)))
+            detections[i][Y1] = int(round(y - (h / 2)))
+            detections[i][X2] = int(round(x + (w / 2)))
             detections[i][Y2] = int(round(y + (h / 2)))
             detections[i][CX] = int(round(x))
             detections[i][CY] = int(round(y))
@@ -320,52 +334,51 @@ class DriveAwayPigeons:
             areas = set()
             for d in detections:
                 areas.add((d[AX], d[AY]))
-            if len(areas) == 0:
-                sweeping_ax, sweeping_ay = -1, -1
+            
+            def random_choice(old_ax: int = -1,
+                              old_ay: int = -1) -> (int, int):
+                candidate = list(areas)
+                if len(candidate) == 0:
+                    return -1, -1
+                if old_ax >= 0 and old_ay >= 0:
+                    candidate.remove((old_ax, old_ay))
+                if len(candidate) == 0:
+                    return -1, -1
+                new_ax, new_ay = random.choice(candidate)
+                self.areas_status[new_ay][new_ax] = S
+                self.areas_sweeps[new_ay][new_ax] = 1
+                self.areas_errors[new_ay][new_ax] = 0
+                return new_ax, new_ay
+            
+            if sweeping_ax < 0 or sweeping_ay < 0:
+                sweeping_ax, sweeping_ay = random_choice()
             else:
-                def random_choice(old_ax: int = -1,
-                                  old_ay: int = -1) -> (int, int):
-                    candidate = list(areas)
-                    if old_ax >= 0 and old_ay >= 0:
-                        candidate.remove((old_ax, old_ay))
-                    new_ax, new_ay = random.choice(candidate)
-                    self.areas_status[new_ay][new_ax] = S
-                    self.areas_sweeps[new_ay][new_ax] = 1
-                    self.areas_errors[new_ay][new_ax] = 0
-                    return new_ax, new_ay
-                
-                if sweeping_ax < 0 or sweeping_ay < 0:
-                    sweeping_ax, sweeping_ay = random_choice()
+                if (sweeping_ax, sweeping_ay) in areas:
+                    if self.areas_errors[sweeping_ay][sweeping_ax] > 0:
+                        self.areas_errors[sweeping_ay][sweeping_ax] = 0
+                    self.areas_sweeps[sweeping_ay][sweeping_ax] += 1
+                    if self.areas_sweeps[sweeping_ay][sweeping_ax] > \
+                            self.sweeps_limit:
+                        sweeping_ax, sweeping_ay = \
+                            random_choice(sweeping_ax, sweeping_ay)
                 else:
-                    if (sweeping_ax, sweeping_ay) in areas:
-                        if self.areas_errors[sweeping_ay][sweeping_ax] > 0:
-                            self.areas_errors[sweeping_ay][sweeping_ax] = 0
-                        self.areas_sweeps[sweeping_ay][sweeping_ax] += 1
-                        if self.areas_sweeps[sweeping_ay][sweeping_ax] > \
-                                self.sweeps_limit:
-                            sweeping_ax, sweeping_ay = \
-                                random_choice(sweeping_ax, sweeping_ay)
-                    else:
-                        self.areas_errors[sweeping_ay][sweeping_ax] += 1
-                        if self.areas_errors[sweeping_ay][sweeping_ax] > \
-                                self.errors_limit:
-                            sweeping_ax, sweeping_ay = \
-                                random_choice(sweeping_ax, sweeping_ay)
-            for ay in range(0, self.split_h):
-                for ax in range(0, self.split_w):
-                    if (ax, ay) in areas:
-                        if ax != sweeping_ax and ay != sweeping_ay:
+                    self.areas_errors[sweeping_ay][sweeping_ax] += 1
+                    if self.areas_errors[sweeping_ay][sweeping_ax] > \
+                            self.errors_limit:
+                        sweeping_ax, sweeping_ay = random_choice()
+            for ay in range(self.split_h):
+                for ax in range(self.split_w):
+                    if ax != sweeping_ax or ay != sweeping_ay:
+                        if (ax, ay) in areas:
                             self.areas_status[ay][ax] = D
-                            self.areas_sweeps[ay][ax] = 0
-                            self.areas_errors[ay][ax] = 0
-                    else:
-                        self.areas_status[ay][ax] = N
+                        else:
+                            self.areas_status[ay][ax] = N
                         self.areas_sweeps[ay][ax] = 0
                         self.areas_errors[ay][ax] = 0
             self.que_sweeping.put((sweeping_ax, sweeping_ay))
             self.que_showing.put(
                 (self.areas_status.copy(), self.areas_sweeps.copy(),
-                 self.areas_errors.copy(), fps))
+                 self.areas_errors.copy(), detections, fps))
     
     def thd_sweeping_func(self):
         sweeping_ax, sweeping_ay = -1, -1
@@ -384,6 +397,7 @@ class DriveAwayPigeons:
                 self.sweep_area(sweeping_ax, sweeping_ay)
             else:
                 time.sleep(0.01)  # avoid high CPU usage
+            print(sweeping_ax, sweeping_ay)
     
     def thd_showing_func(self):
         areas_status, areas_sweeps, areas_errors, detections, fps = \
@@ -402,9 +416,11 @@ class DriveAwayPigeons:
                 self.draw_areas(img, has_canter=True)
             cv2.imshow("image", img)
             cv2.waitKey(1)
+            # time.sleep(1 / 60)  # avoid high CPU usage
 
 
 TEST_MODE = True
+TEST_DETECT_ONLY = False
 
 
 def main():
@@ -424,9 +440,9 @@ def main():
 
 
 def flush_stdin():
-    # termios.tcflush(sys.stdin, termios.TCIOFLUSH)
-    while len(select.select([sys.stdin.fileno()], [], [], None)[0]) > 0:
-        os.read(sys.stdin.fileno(), 4096)
+    termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+    # while len(select.select([sys.stdin.fileno()], [], [], None)[0]) > 0:
+    #     os.read(sys.stdin.fileno(), 4096)
 
 
 if __name__ == '__main__':
