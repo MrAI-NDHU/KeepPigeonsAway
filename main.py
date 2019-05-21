@@ -1,6 +1,6 @@
 from queue import Queue
 from threading import Thread
-from typing import Any, Dict, TypeVar
+from typing import Any, Dict, TypeVar, Tuple
 import logging
 import math
 import numpy
@@ -30,19 +30,19 @@ N, D, S = 0, 1, 2
 
 class DriveAwayPigeons:
     
-    def __init__(self, split_w: int, split_h: int, angle_prec: float):
+    def __init__(self, split_w: int, split_h: int):
         self.split_w, self.split_h = split_w, split_h
-        self.angle_prec = angle_prec
+        self.angle_prec = 1 / 40
         self.laser_pin, self.servo_x_ch, self.servo_y_ch = 18, 1, 0
-        self.sweeps_limit, self.errors_limit = 36, 12
+        self.sweeps_limit, self.errors_limit, self.abandons_limit = 36, 6, 36
         self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
         self.showing_w, self.showing_h = 854, 480
         self.area_normal_color = (0x00, 0xFF, 0x00)  # green
         self.area_detected_color = (0xFF, 0x00, 0x00)  # blue
+        self.area_sweeping_color = (0xFF, 0x00, 0xFF)  # purple
         self.area_error_color = (0x00, 0x00, 0xFF)  # red
         self.detection_color = (0xFF, 0xFF, 0x00)  # cyan
-        self.area_canter_color = (0xFF, 0x00, 0xFF)  # purple
         self.others_color = (0x00, 0xFF, 0xFF)  # yellow
         
         self.areas_rect = self.get_areas_rect()
@@ -231,9 +231,9 @@ class DriveAwayPigeons:
     def get_cap_img(self, w, h) -> numpy.ndarray:
         _, img = self.cap.read()
         return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
-
+    
     def draw_text(self, img: numpy.ndarray, text: str, x: int, y: int,
-                  size: float, color: (int, int, int), align: int = 0):
+                  size: float, color: Tuple[int, int, int], align: int = 0):
         if not 0 <= align < 9:
             raise OverflowError
         (text_w, text_h), base_line = \
@@ -267,8 +267,9 @@ class DriveAwayPigeons:
                 else:
                     color = self.area_detected_color
                     if areas_status[ay][ax] == S:
+                        color = self.area_sweeping_color
                         c = (int(round(rect[CX])), int(round(rect[CY])))
-                        cv2.circle(img, c, 4, self.area_canter_color, 1)
+                        cv2.circle(img, c, 4, color, 1, cv2.LINE_AA)
                         self.draw_text(
                             img, "{:2d}".format(areas_sweeps[ay][ax]),
                             rect[X1] + 1, rect[Y2] - 1, 1 / 2, color, 6)
@@ -283,7 +284,8 @@ class DriveAwayPigeons:
                     img, i_str, rect[X1] + 1, rect[Y1] + 1, 1, color, 0)
                 if has_canter:
                     c = (int(round(rect[CX])), int(round(rect[CY])))
-                    cv2.circle(img, c, 4, self.area_canter_color, 1)
+                    cv2.circle(
+                        img, c, 4, self.area_sweeping_color, 1, cv2.LINE_AA)
     
     def draw_fps(self, img: numpy.ndarray, fps: float):
         self.draw_text(img, "FPS:{:6.2f}".format(fps),
@@ -298,7 +300,7 @@ class DriveAwayPigeons:
             cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
             cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
             self.draw_text(img, "{:6.2f}%".format(d[R] * 100),
-                           d[X1], d[Y1] - 1, 1 / 4, self.detection_color, 6)
+                           d[CX], d[Y1] - 1, 1 / 4, self.detection_color, 7)
     
     def trans_detections(self,
                          detections_raw: [[[Any]]]) -> [Dict[str, Number]]:
@@ -341,6 +343,7 @@ class DriveAwayPigeons:
     
     def thd_deciding_func(self):
         sweeping_ax, sweeping_ay = -1, -1
+        abandoning_ax, abandoning_ay, abandons = -1, -1, 0
         while True:
             detections_raw, fps = self.que_deciding.get()
             detections = self.trans_detections(detections_raw)
@@ -351,6 +354,8 @@ class DriveAwayPigeons:
             def random_choice(old_ax: int = -1,
                               old_ay: int = -1) -> (int, int):
                 candidate = list(areas)
+                if 0 < abandons <= self.abandons_limit:
+                    old_ax, old_ay = abandoning_ax, abandoning_ay
                 if len(candidate) > 0 and (old_ax, old_ay) in candidate:
                     candidate.remove((old_ax, old_ay))
                 if len(candidate) == 0:
@@ -363,6 +368,9 @@ class DriveAwayPigeons:
             
             if sweeping_ax < 0 or sweeping_ay < 0:
                 sweeping_ax, sweeping_ay = random_choice()
+                abandons += 1
+                if sweeping_ax >= 0 and sweeping_ay >= 0:
+                    abandoning_ax, abandoning_ay, abandons = -1, -1, 0
             else:
                 if (sweeping_ax, sweeping_ay) in areas:
                     if self.areas_errors[sweeping_ay][sweeping_ax] > 0:
@@ -370,8 +378,11 @@ class DriveAwayPigeons:
                     self.areas_sweeps[sweeping_ay][sweeping_ax] += 1
                     if self.areas_sweeps[sweeping_ay][sweeping_ax] > \
                             self.sweeps_limit:
+                        abandoning_ax, abandoning_ay = sweeping_ax, sweeping_ay
                         sweeping_ax, sweeping_ay = \
                             random_choice(sweeping_ax, sweeping_ay)
+                        if sweeping_ax < 0 or sweeping_ay < 0:
+                            abandons = 1
                 else:
                     self.areas_errors[sweeping_ay][sweeping_ax] += 1
                     if self.areas_errors[sweeping_ay][sweeping_ax] > \
@@ -445,7 +456,7 @@ def main():
         split_w, split_h = int(sys.argv[1]), int(sys.argv[2])
     d = None
     try:
-        d = DriveAwayPigeons(split_w, split_h, 1 / 40)
+        d = DriveAwayPigeons(split_w, split_h)
     except KeyboardInterrupt:
         del d
 
