@@ -25,7 +25,7 @@ Number = TypeVar("Number", int, float)
 X, Y = "x", "y"
 X1, Y1, X2, Y2 = "x1", "y1", "x2", "y2",
 CX, CY, AX, AY, R = "cx", "cy", "ax", "ay", "r"
-N, D, S = 0, 1, 2
+N, D, S, A = 0, 1, 2, 3
 
 
 class DriveAwayPigeons:
@@ -266,6 +266,10 @@ class DriveAwayPigeons:
                     color = self.area_normal_color
                 else:
                     color = self.area_detected_color
+                    if areas_status[ay][ax] == A:
+                        self.draw_text(
+                            img, "{:2d}".format(areas_sweeps[ay][ax]),
+                            rect[X1] + 1, rect[Y2] - 1, 1 / 2, color, 6)
                     if areas_status[ay][ax] == S:
                         color = self.area_sweeping_color
                         c = (int(round(rect[CX])), int(round(rect[CY])))
@@ -342,8 +346,7 @@ class DriveAwayPigeons:
             self.que_deciding.put((detections_raw, fps))
     
     def thd_deciding_func(self):
-        sweeping_ax, sweeping_ay = -1, -1
-        abandoning_ax, abandoning_ay, abandons = -1, -1, 0
+        sweeping_ax, sweeping_ay, abandoning_ax, abandoning_ay = -1, -1, -1, -1
         while True:
             detections_raw, fps = self.que_deciding.get()
             detections = self.trans_detections(detections_raw)
@@ -354,7 +357,8 @@ class DriveAwayPigeons:
             def random_choice(old_ax: int = -1,
                               old_ay: int = -1) -> (int, int):
                 candidate = list(areas)
-                if 0 < abandons <= self.abandons_limit:
+                if 0 < self.areas_sweeps[abandoning_ay][abandoning_ax] \
+                        <= self.abandons_limit:
                     old_ax, old_ay = abandoning_ax, abandoning_ay
                 if len(candidate) > 0 and (old_ax, old_ay) in candidate:
                     candidate.remove((old_ax, old_ay))
@@ -368,9 +372,9 @@ class DriveAwayPigeons:
             
             if sweeping_ax < 0 or sweeping_ay < 0:
                 sweeping_ax, sweeping_ay = random_choice()
-                abandons += 1
+                self.areas_sweeps[abandoning_ay][abandoning_ax] += 1
                 if sweeping_ax >= 0 and sweeping_ay >= 0:
-                    abandoning_ax, abandoning_ay, abandons = -1, -1, 0
+                    abandoning_ax, abandoning_ay = -1, -1
             else:
                 if (sweeping_ax, sweeping_ay) in areas:
                     if self.areas_errors[sweeping_ay][sweeping_ax] > 0:
@@ -378,11 +382,13 @@ class DriveAwayPigeons:
                     self.areas_sweeps[sweeping_ay][sweeping_ax] += 1
                     if self.areas_sweeps[sweeping_ay][sweeping_ax] > \
                             self.sweeps_limit:
-                        abandoning_ax, abandoning_ay = sweeping_ax, sweeping_ay
+                        ax, ay = sweeping_ax, sweeping_ay
                         sweeping_ax, sweeping_ay = \
                             random_choice(sweeping_ax, sweeping_ay)
                         if sweeping_ax < 0 or sweeping_ay < 0:
-                            abandons = 1
+                            self.areas_status[ay][ax] = A
+                            self.areas_sweeps[ay][ax] = 1
+                            abandoning_ax, abandoning_ay = ax, ay
                 else:
                     self.areas_errors[sweeping_ay][sweeping_ax] += 1
                     if self.areas_errors[sweeping_ay][sweeping_ax] > \
@@ -390,7 +396,8 @@ class DriveAwayPigeons:
                         sweeping_ax, sweeping_ay = random_choice()
             for ay in range(self.split_h):
                 for ax in range(self.split_w):
-                    if ax != sweeping_ax or ay != sweeping_ay:
+                    if (ax != sweeping_ax or ay != sweeping_ay) and \
+                            (ax != abandoning_ax or ay != abandoning_ay):
                         if (ax, ay) in areas:
                             self.areas_status[ay][ax] = D
                         else:
@@ -419,7 +426,6 @@ class DriveAwayPigeons:
                 self.sweep_area(sweeping_ax, sweeping_ay)
             # else:
             #     time.sleep(1 / 60)  # avoid high CPU usage
-            print(sweeping_ax, sweeping_ay)
     
     def thd_showing_func(self):
         areas_status, areas_sweeps, areas_errors, detections, fps = \
