@@ -99,64 +99,6 @@ class DriveAwayPigeons:
         self.darknet_img = darknet.make_image(
             self.darknet_net_w, self.darknet_net_h, 3)
     
-    def init_laser(self):
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(self.laser_pin, GPIO.OUT, initial=GPIO.LOW)
-        if TEST_MODE:
-            logging.info("init_laser: test start")
-            for i in range(0):
-                time.sleep(2)
-                self.open_laser()
-                time.sleep(2)
-                self.close_laser()
-            logging.info("init_laser: test finish")
-    
-    def open_laser(self):
-        GPIO.output(self.laser_pin, GPIO.HIGH)
-    
-    def close_laser(self):
-        GPIO.output(self.laser_pin, GPIO.LOW)
-    
-    def get_arm(self) -> ControllerForPCA9685:
-        mg995_sec_per_angle = \
-            ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
-        mg995_pan = Servo(0.0, 180.0, 180.0, 630.0, 50.0, mg995_sec_per_angle)
-        mg995_tilt = Servo(0.0, 180.0, 150.0, 510.0, 50.0, mg995_sec_per_angle)
-        servos = {X: mg995_pan, Y: mg995_tilt}
-        chs = {X: self.servo_x_ch, Y: self.servo_y_ch}
-        return ControllerForPCA9685(servos, chs, 60.0)
-    
-    def get_areas_rect(self) -> [[Dict[str, Number]]]:
-        areas_rect = self.make_areas_dict()
-        aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
-        for ay in range(self.split_h):
-            for ax in range(self.split_w):
-                x1, y1 = aw * ax, ah * ay
-                x2, y2 = aw * (ax + 1), ah * (ay + 1)
-                areas_rect[ay][ax][X1] = int(round(x1))
-                areas_rect[ay][ax][Y1] = int(round(y1))
-                areas_rect[ay][ax][X2] = int(round(x2)) - 1
-                areas_rect[ay][ax][Y2] = int(round(y2)) - 1
-                areas_rect[ay][ax][CX] = (x1 + x2) / 2
-                areas_rect[ay][ax][CY] = (y1 + y2) / 2
-        return areas_rect
-    
-    def check_areas_angle(self):
-        for ay in range(self.split_h):
-            for ax in range(self.split_w):
-                if self.areas_angle[ay][ax] is None:
-                    raise Exception("failed to check areas angle")
-                if TEST_MODE:
-                    n = ay * self.split_w + ax
-                    logging.info("check_areas_angle: check {}: {}"
-                                 .format(n, self.areas_angle[ay][ax]))
-                    self.arm.rotate(self.areas_angle[ay][ax], False)
-                    self.open_laser()
-                    time.sleep(1)
-                    for i in range(100):
-                        self.sweep_area(ax, ay)
-                    self.close_laser()
-    
     def init_areas_angle(self):
         self.areas_angle = self.make_areas_dict()
         if TEST_DETECT_ONLY:
@@ -214,6 +156,68 @@ class DriveAwayPigeons:
                 self.area_angle_spacing[Y] = max(
                     abs(area1_y - area0_y), self.area_angle_spacing[Y])
     
+    def init_laser(self):
+        GPIO.setmode(GPIO.BOARD)
+        GPIO.setup(self.laser_pin, GPIO.OUT, initial=GPIO.LOW)
+        if TEST_MODE:
+            logging.info("init_laser: test start")
+            for i in range(0):
+                time.sleep(2)
+                self.open_laser()
+                time.sleep(2)
+                self.close_laser()
+            logging.info("init_laser: test finish")
+    
+    def open_laser(self):
+        GPIO.output(self.laser_pin, GPIO.HIGH)
+    
+    def close_laser(self):
+        GPIO.output(self.laser_pin, GPIO.LOW)
+    
+    def check_areas_angle(self):
+        for ay in range(self.split_h):
+            for ax in range(self.split_w):
+                if self.areas_angle[ay][ax] is None:
+                    raise Exception("failed to check areas angle")
+                if TEST_MODE:
+                    n = ay * self.split_w + ax
+                    logging.info("check_areas_angle: check {}: {}"
+                                 .format(n, self.areas_angle[ay][ax]))
+                    self.arm.rotate(self.areas_angle[ay][ax], False)
+                    self.open_laser()
+                    time.sleep(1)
+                    for i in range(100):
+                        self.sweep_area(ax, ay)
+                    self.close_laser()
+    
+    def get_arm(self) -> ControllerForPCA9685:
+        mg995_sec_per_angle = \
+            ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
+        mg995_pan = Servo(0.0, 180.0, 180.0, 630.0, 50.0, mg995_sec_per_angle)
+        mg995_tilt = Servo(0.0, 180.0, 150.0, 510.0, 50.0, mg995_sec_per_angle)
+        servos = {X: mg995_pan, Y: mg995_tilt}
+        chs = {X: self.servo_x_ch, Y: self.servo_y_ch}
+        return ControllerForPCA9685(servos, chs, 60.0)
+    
+    def get_areas_rect(self) -> [[Dict[str, Number]]]:
+        areas_rect = self.make_areas_dict()
+        aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
+        for ay in range(self.split_h):
+            for ax in range(self.split_w):
+                x1, y1 = aw * ax, ah * ay
+                x2, y2 = aw * (ax + 1), ah * (ay + 1)
+                areas_rect[ay][ax][X1] = int(round(x1))
+                areas_rect[ay][ax][Y1] = int(round(y1))
+                areas_rect[ay][ax][X2] = int(round(x2)) - 1
+                areas_rect[ay][ax][Y2] = int(round(y2)) - 1
+                areas_rect[ay][ax][CX] = (x1 + x2) / 2
+                areas_rect[ay][ax][CY] = (y1 + y2) / 2
+        return areas_rect
+    
+    def get_cap_img(self, w, h) -> numpy.ndarray:
+        _, img = self.cap.read()
+        return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+    
     def sweep_area(self, ax: int, ay: int):
         if TEST_DETECT_ONLY:
             time.sleep(0.05)
@@ -228,9 +232,31 @@ class DriveAwayPigeons:
         self.arm.rotate({X: x, Y: y}, False)
         time.sleep(0.05)
     
-    def get_cap_img(self, w, h) -> numpy.ndarray:
-        _, img = self.cap.read()
-        return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+    def trans_detections(self,
+                         detections_raw: [[[Any]]]) -> [Dict[str, Number]]:
+        detections = [{} for _ in range(len(detections_raw))]
+        for i in range(len(detections_raw)):
+            d = detections_raw[i]
+            detections[i][R] = d[1]
+            wr = self.showing_w / self.darknet_net_w
+            hr = self.showing_h / self.darknet_net_h
+            x, y, w, h = d[2][0] * wr, d[2][1] * hr, d[2][2] * wr, d[2][3] * hr
+            detections[i][X1] = int(round(x - (w / 2)))
+            detections[i][Y1] = int(round(y - (h / 2)))
+            detections[i][X2] = int(round(x + (w / 2)))
+            detections[i][Y2] = int(round(y + (h / 2)))
+            detections[i][CX] = int(round(x))
+            detections[i][CY] = int(round(y))
+            dist = sys.maxsize
+            for ay in range(0, self.split_h):
+                for ax in range(0, self.split_w):
+                    rect = self.areas_rect[ay][ax]
+                    d2 = math.pow(rect[CX] - x, 2) + math.pow(rect[CY] - y, 2)
+                    if d2 < dist:
+                        detections[i][AX] = ax
+                        detections[i][AY] = ay
+                        dist = d2
+        return detections
     
     def draw_text(self, img: numpy.ndarray, text: str, x: int, y: int,
                   size: float, color: Tuple[int, int, int], align: int = 0):
@@ -252,6 +278,21 @@ class DriveAwayPigeons:
         else:
             y = int(round(y - h + 1 + text_h + base_line / 2 - 1))
         cv2.putText(img, text, (x, y), self.font, size, color, 1, cv2.LINE_AA)
+    
+    def draw_detections(self, img: numpy.ndarray,
+                        detections: [Dict[str, Number]]):
+        color, padding, size = self.detection_color, 1, 10
+        for d in detections:
+            cv2.rectangle(img, (d[X1], d[Y1]), (d[X2], d[Y2]), color, 1)
+            cx = int(round(self.areas_rect[d[AY]][d[AX]][CX]))
+            cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
+            cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
+            self.draw_text(img, "{:6.2f}%".format(d[R] * 100),
+                           d[CX], d[Y1] - 1, 1 / 4, self.detection_color, 7)
+    
+    def draw_fps(self, img: numpy.ndarray, fps: float):
+        self.draw_text(img, "FPS:{:6.2f}".format(fps),
+                       self.showing_w - 1, 0, 1 / 2, self.others_color, 2)
     
     def draw_areas(self, img: numpy.ndarray, areas_status: [[int]] = None,
                    areas_sweeps: [[int]] = None, areas_errors: [[int]] = None,
@@ -290,47 +331,6 @@ class DriveAwayPigeons:
                     c = (int(round(rect[CX])), int(round(rect[CY])))
                     cv2.circle(
                         img, c, 4, self.area_sweeping_color, 1, cv2.LINE_AA)
-    
-    def draw_fps(self, img: numpy.ndarray, fps: float):
-        self.draw_text(img, "FPS:{:6.2f}".format(fps),
-                       self.showing_w - 1, 0, 1 / 2, self.others_color, 2)
-    
-    def draw_detections(self, img: numpy.ndarray,
-                        detections: [Dict[str, Number]]):
-        color, padding, size = self.detection_color, 1, 10
-        for d in detections:
-            cv2.rectangle(img, (d[X1], d[Y1]), (d[X2], d[Y2]), color, 1)
-            cx = int(round(self.areas_rect[d[AY]][d[AX]][CX]))
-            cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
-            cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
-            self.draw_text(img, "{:6.2f}%".format(d[R] * 100),
-                           d[CX], d[Y1] - 1, 1 / 4, self.detection_color, 7)
-    
-    def trans_detections(self,
-                         detections_raw: [[[Any]]]) -> [Dict[str, Number]]:
-        detections = [{} for _ in range(len(detections_raw))]
-        for i in range(len(detections_raw)):
-            d = detections_raw[i]
-            detections[i][R] = d[1]
-            wr = self.showing_w / self.darknet_net_w
-            hr = self.showing_h / self.darknet_net_h
-            x, y, w, h = d[2][0] * wr, d[2][1] * hr, d[2][2] * wr, d[2][3] * hr
-            detections[i][X1] = int(round(x - (w / 2)))
-            detections[i][Y1] = int(round(y - (h / 2)))
-            detections[i][X2] = int(round(x + (w / 2)))
-            detections[i][Y2] = int(round(y + (h / 2)))
-            detections[i][CX] = int(round(x))
-            detections[i][CY] = int(round(y))
-            dist = sys.maxsize
-            for ay in range(0, self.split_h):
-                for ax in range(0, self.split_w):
-                    rect = self.areas_rect[ay][ax]
-                    d2 = math.pow(rect[CX] - x, 2) + math.pow(rect[CY] - y, 2)
-                    if d2 < dist:
-                        detections[i][AX] = ax
-                        detections[i][AY] = ay
-                        dist = d2
-        return detections
     
     def thd_detecting_func(self):
         self.is_started_detecting = True
