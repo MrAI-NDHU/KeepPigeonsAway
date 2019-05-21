@@ -287,11 +287,11 @@ class DriveAwayPigeons:
             cx = int(round(self.areas_rect[d[AY]][d[AX]][CX]))
             cy = int(round(self.areas_rect[d[AY]][d[AX]][CY]))
             cv2.line(img, (d[CX], d[CY]), (cx, cy), color, 1, cv2.LINE_AA)
-            self.draw_text(img, "{:6.2f}%".format(d[R] * 100),
+            self.draw_text(img, "{:5.2f}%".format(d[R] * 100),
                            d[CX], d[Y1] - 1, 1 / 4, self.detection_color, 7)
     
     def draw_fps(self, img: numpy.ndarray, fps: float):
-        self.draw_text(img, "FPS:{:6.2f}".format(fps),
+        self.draw_text(img, "FPS:{:05.2f}".format(fps),
                        self.showing_w - 1, 0, 1 / 2, self.others_color, 2)
     
     def draw_areas(self, img: numpy.ndarray, areas_status: [[int]] = None,
