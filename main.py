@@ -108,7 +108,7 @@ class DriveAwayPigeons:
         self.areas_angle = self.make_areas_dict()
         if TEST_DETECT_ONLY:
             return
-        flush_stdin()
+        termios.tcflush(sys.stdin, termios.TCIOFLUSH)
         filepath = input("Load areas angle: ").strip()
         if filepath != "":
             with open(filepath, "rb") as f:
@@ -129,7 +129,7 @@ class DriveAwayPigeons:
                 elif keyboard.is_pressed("right"):
                     self.arm.rotate({X: -self.angle_prec}, True)
                 elif keyboard.is_pressed("s"):
-                    flush_stdin()
+                    termios.tcflush(sys.stdin, termios.TCIOFLUSH)
                     i = int(input("Input area number in range [{},{}]: "
                                   .format(0, self.split_w * self.split_h - 1)))
                     self.areas_angle[i // self.split_w][i % self.split_w] = \
@@ -137,7 +137,7 @@ class DriveAwayPigeons:
             self.close_laser()
             self.init_sweep_attrs()
             self.check_areas_angle()
-            flush_stdin()
+            termios.tcflush(sys.stdin, termios.TCIOFLUSH)
             filepath = input("Save areas angle: ").strip()
             if filepath != "":
                 with open(filepath, "wb") as f:
@@ -319,7 +319,7 @@ class DriveAwayPigeons:
                     if areas_errors[ay][ax] > 0:
                         color = self.area_error_color
                         self.draw_text(
-                            img, "SKP:{:2d}".format(areas_errors[ay][ax]),
+                            img, "SKP:{:1d}".format(areas_errors[ay][ax]),
                             rect[X2] - 1, rect[Y2] - 1, 1 / 2, color, 8)
                     if areas_status[ay][ax] == S:
                         color = self.area_sweeping_color
@@ -331,7 +331,7 @@ class DriveAwayPigeons:
                         if areas_errors[ay][ax] > 0:
                             color = self.area_error_color
                             self.draw_text(
-                                img, "ERR:{:2d}".format(areas_errors[ay][ax]),
+                                img, "ERR:{:1d}".format(areas_errors[ay][ax]),
                                 rect[X2] - 1, rect[Y2] - 1, 1 / 2, color, 8)
                 cv2.rectangle(img, (rect[X1], rect[Y1]),
                               (rect[X2], rect[Y2]), color, 1)
@@ -361,10 +361,10 @@ class DriveAwayPigeons:
             begin_time = time.time()
             detections_raw, fps = self.que_deciding.get()
             detections = self.trans_detections(detections_raw)
-            areas = set()
+            can_areas, areas = set(), set()
             for d in detections:
-                areas.add((d[AX], d[AY]))
-            for (ax, ay) in areas:
+                can_areas.add((d[AX], d[AY]))
+            for (ax, ay) in can_areas:
                 pass  # TODO
             
             def random_choice(old_ax: int = -1,
@@ -417,7 +417,7 @@ class DriveAwayPigeons:
                             self.areas_status[ay][ax] = N
                         self.areas_sweeps[ay][ax] = 0
                         self.areas_errors[ay][ax] = 0
-            logging.info("use {}s".format(time.time() - begin_time))
+            logging.info("use {:.3}s".format(time.time() - begin_time))
             self.que_sweeping.put((sweeping_ax, sweeping_ay))
             self.que_showing.put(
                 (self.areas_status.copy(), self.areas_sweeps.copy(),
@@ -426,7 +426,6 @@ class DriveAwayPigeons:
     def thd_sweeping_func(self):
         sweeping_ax, sweeping_ay = -1, -1
         while True:
-            begin_time = time.time()
             if not self.que_sweeping.empty():
                 ax, ay = self.que_sweeping.get()
                 if sweeping_ax != ax or sweeping_ay != ay:
@@ -439,7 +438,6 @@ class DriveAwayPigeons:
             if sweeping_ax >= 0 and sweeping_ay >= 0:
                 self.open_laser()
                 self.sweep_area(sweeping_ax, sweeping_ay)
-            logging.info("use {}s".format(time.time() - begin_time))
             # else:
             #     time.sleep(1 / 60)  # avoid high CPU usage
     
@@ -461,10 +459,9 @@ class DriveAwayPigeons:
                 self.draw_areas(img, has_canter=True)
             cv2.imshow("image", img)
             cv2.waitKey(1)
-            logging.info("use {}s".format(time.time() - begin_time))
+            logging.info("use {:.3}s".format(time.time() - begin_time))
             if self.video_path_or_stream != 0:
                 time.sleep(1 / fps)
-            # time.sleep(1 / 60)  # avoid high CPU usage
 
 
 TEST_DEVICE = True
@@ -475,7 +472,7 @@ def main():
     random.seed()
     logging.basicConfig(
         stream=sys.stdout, level=logging.ERROR, datefmt="%H:%M:%S",
-        format="%(asctime)s.%(msecs)03d: [ %(levelname)-5s ] "
+        format="%(asctime)s.%(msecs)03d | %(levelname)-5s | "
                "%(threadName)12s -> %(funcName)s: %(message)s")
     
     split_w, split_h = 4, 3
@@ -488,12 +485,6 @@ def main():
         d = DriveAwayPigeons(split_w, split_h)
     except KeyboardInterrupt:
         del d
-
-
-def flush_stdin():
-    termios.tcflush(sys.stdin, termios.TCIOFLUSH)
-    # while len(select.select([sys.stdin.fileno()], [], [], None)[0]) > 0:
-    #     os.read(sys.stdin.fileno(), 4096)
 
 
 if __name__ == '__main__':
