@@ -22,7 +22,12 @@ from servo.controller import ControllerForPCA9685
 import darknet
 
 X, Y = "x", "y"
-
+C_RED = (0x00, 0x00, 0xFF)
+C_GREEN = (0x00, 0xFF, 0x00)
+C_BLUE = (0xFF, 0x00, 0x00)
+C_YELLOW = (0x00, 0xFF, 0xFF)
+C_MAGENTA = (0xFF, 0x00, 0xFF)
+C_CYAN = (0xFF, 0xFF, 0x00)
 
 class Rect:
     x1, x2, y1, y2, cx, cy = -1, -1, -1, -1, -1.0, -1.0
@@ -82,7 +87,7 @@ class DriveAwayPigeons:
         self.showing_w, self.showing_h = 854, 480
         self.area_normal_color = (0x00, 0xFF, 0x00)  # green
         self.area_detected_color = (0xFF, 0x00, 0x00)  # blue
-        self.area_sweeping_color = (0xFF, 0x00, 0xFF)  # purple
+        self.area_sweeping_color = (0xFF, 0x00, 0xFF)  # magenta
         self.area_error_color = (0x00, 0x00, 0xFF)  # red
         self.detection_color = (0xFF, 0xFF, 0x00)  # cyan
         self.others_color = (0x00, 0xFF, 0xFF)  # yellow
