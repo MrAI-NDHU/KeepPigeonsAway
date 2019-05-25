@@ -158,9 +158,10 @@ class DriveAwayPigeons:
         return [[Area()] * self.split_w for _ in range(self.split_h)]
     
     def init_darknet(self):
-        config_path = "./cfg/yolov3-tiny.cfg"
-        weight_path = "./yolov3-tiny_pigeon.weights"
-        meta_path = "./cfg/pigeon.data"
+        config_path = "./darknet/pigeons_cfg/yolov3-tiny-pigeons.cfg"
+        weight_path = \
+            "./darknet/pigeons_weights/yolov3-tiny-pigeons_last.weights"
+        meta_path = "./darknet/pigeons_cfg/pigeons.data"
         self.darknet_net = darknet.load_net_custom(config_path.encode(
             "ascii"), weight_path.encode("ascii"), 0, 1)
         self.darknet_net_w = darknet.network_width(self.darknet_net)
