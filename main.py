@@ -11,18 +11,17 @@ import random
 import sys
 import time
 
-from Jetson import GPIO
 import cv2
-import keyboard
-
-from servo import Servo
-from servo.controller import ControllerForPCA9685
 import darknet
+import keyboard
 
 TEST_DEVICE = True
 TEST_DETECT_ONLY = False
 
 try:
+    from Jetson import GPIO
+    from servo import Servo
+    from servo.controller import ControllerForPCA9685
     import termios
 except ModuleNotFoundError:
     TEST_DETECT_ONLY = True
@@ -239,8 +238,6 @@ class DriveAwayPigeons:
                     pickle.dump(self.areas, f)
     
     def init_area_angle_spacing(self):
-        if TEST_DETECT_ONLY:
-            return
         for i in range(1, self.split_w * self.split_h):
             ax1, ay1 = i % self.split_w, i // self.split_w
             ax0, ay0 = (i - 1) % self.split_w, (i - 1) // self.split_w
@@ -276,6 +273,8 @@ class DriveAwayPigeons:
         self.areas_canter_angle.y = (ay1_ay + ay2_ay) / 2
     
     def init_laser(self):
+        if TEST_DETECT_ONLY:
+            return
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(self.laser_pin, GPIO.OUT, initial=GPIO.LOW)
         if TEST_DEVICE:
@@ -288,9 +287,13 @@ class DriveAwayPigeons:
             logging.debug("test done")
     
     def open_laser(self):
+        if TEST_DETECT_ONLY:
+            return
         GPIO.output(self.laser_pin, GPIO.HIGH)
     
     def close_laser(self):
+        if TEST_DETECT_ONLY:
+            return
         GPIO.output(self.laser_pin, GPIO.LOW)
     
     def check_areas_angle(self):
@@ -311,6 +314,8 @@ class DriveAwayPigeons:
         self.arm.rotate(self.areas_canter_angle.dict(), False)
     
     def get_arm(self) -> ControllerForPCA9685:
+        if TEST_DETECT_ONLY:
+            return None
         mg995_sec_per_angle = \
             ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
         mg995_pan = Servo(0.0, 180.0, 180.0, 630.0, 50.0, mg995_sec_per_angle)
