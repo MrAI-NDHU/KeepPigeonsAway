@@ -108,8 +108,7 @@ venv.bak/
 .vscode/
 
 # ingored files
-servo/
-darknet.py
-darknet.pyc
-darknet_video.py
-libdarknet.so
+!darknet/
+darknet/*
+!darknet/__init__.py
+!darknet/pigeons_*/
