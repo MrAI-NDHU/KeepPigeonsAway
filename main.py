@@ -1,5 +1,5 @@
 from copy import copy
-from enum import auto, IntEnum
+from enum import Enum, IntEnum, auto
 from queue import Queue
 from threading import Thread
 from typing import Dict, List, Tuple
@@ -15,7 +15,7 @@ import cv2
 import darknet
 import keyboard
 
-TEST_DEVICE = True
+TEST_DEVICE = False
 TEST_DETECT_ONLY = False
 
 try:
@@ -62,7 +62,7 @@ class Angle:
         return {X: self.x, Y: self.y}
 
 
-class Status(IntEnum):
+class Status(Enum):
     detecting = auto()
     confirming = auto()
     detected = auto()
