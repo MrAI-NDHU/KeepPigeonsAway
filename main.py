@@ -1,6 +1,6 @@
 from argparse import ArgumentParser
 from copy import copy
-from enum import auto, Enum, IntEnum
+from enum import Enum, IntEnum, auto
 from queue import Empty as QueueEmpty
 from queue import Full as QueueFull
 from queue import Queue
@@ -23,11 +23,12 @@ IS_DECIDE_ONLY = False
 IS_DETECT_ONLY = False
 
 try:
+    from Jetson import GPIO
     from servo import Servo
     from servo.controller import ControllerForPCA9685
-    from Jetson import GPIO
     import termios
-except:
+except ImportError:
+    Servo, ControllerForPCA9685, GPIO, termios = None, None, None, None
     IS_DECIDE_ONLY = True
 if IS_DETECT_ONLY:
     IS_DECIDE_ONLY = True
@@ -120,6 +121,7 @@ class KeepPigeonsAway:
         self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
         self.showing_w, self.showing_h = 854, 480
+        self.delay_time = 1 / 60
         
         self.detecting_color = C_GREEN
         self.detected_color = C_CYAN
@@ -362,11 +364,16 @@ class KeepPigeonsAway:
                                         10, (self.showing_w, self.showing_h))
         return video_in, video_out
     
-    def get_cap_img(self, w: int, h: int) -> numpy.ndarray:
+    def get_cap_img(self, has_darknet: bool) -> (numpy.ndarray, numpy.ndarray):
         ret, img = self.video_in.read()
         if not ret:
             return None
-        return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+        img1, img2 = cv2.resize(img, (self.showing_w, self.showing_h),
+                                interpolation=cv2.INTER_LINEAR), None
+        if has_darknet:
+            img2 = cv2.resize(img, (self.darknet_net_w, self.darknet_net_h),
+                              interpolation=cv2.INTER_LINEAR)
+        return img1, img2
     
     def close_video_io(self):
         self.is_terminated = True
@@ -438,7 +445,7 @@ class KeepPigeonsAway:
         for d in detections:
             cv2.rectangle(img, (d.x1, d.y1), (d.x2, d.y2), color, 1)
             self.draw_text(img, "{:5.2f}%".format(d.rate * 100),
-                           d.cx, d.y1 - 1, 1 / 4, self.others_color, 7)
+                           d.cx, d.y1 - 1, 1 / 3, self.others_color, 7)
             
             if IS_DETECT_ONLY:
                 continue
@@ -511,23 +518,25 @@ class KeepPigeonsAway:
         
         while not self.is_terminated:
             begin_time = time.time()
-            img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
+            img = self.get_cap_img(True)
             if img is None:
                 self.close_video_io()
                 return
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            darknet.copy_image_from_bytes(self.darknet_img, img.tobytes())
+            img1, img2 = img
+            img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
+            darknet.copy_image_from_bytes(self.darknet_img, img2.tobytes())
             detections_raw = darknet.detect_image(
                 self.darknet_net, self.darknet_meta,
-                self.darknet_img, thresh=0.3)
+                self.darknet_img, thresh=0.2)
             detections = self.trans_detections(detections_raw)
             
             fps = 1 / (time.time() - begin_time)
             try:
                 if IS_DETECT_ONLY:
-                    self.que_showing.put((None, detections, fps), timeout=1)
+                    self.que_showing.put(
+                        (img1, None, detections, fps), timeout=1)
                 else:
-                    self.que_deciding.put((detections, fps), timeout=1)
+                    self.que_deciding.put((img1, detections, fps), timeout=1)
             except (QueueEmpty, QueueFull) as e:
                 if self.is_terminated:
                     return
@@ -535,9 +544,8 @@ class KeepPigeonsAway:
     
     def thd_deciding_func(self):
         while not self.is_terminated:
-            begin_time = time.time()
             try:
-                detections, fps = self.que_deciding.get(timeout=1)
+                img, detections, fps = self.que_deciding.get(timeout=1)
             except (QueueEmpty, QueueFull) as e:
                 if self.is_terminated:
                     return
@@ -566,6 +574,7 @@ class KeepPigeonsAway:
                             if a.count.sweep > Limit.sweep:
                                 a.count.clear()
                                 a.status = Status.abandoning
+                                a.count.abandon = 1
                         elif a.status == Status.abandoning:
                             a.count.abandon += 1
                             if a.count.abandon > Limit.abandon:
@@ -594,7 +603,8 @@ class KeepPigeonsAway:
                         ai += 1
             if sweeping_count > 1:
                 logging.error("sweeping status must be 1")
-                exit(1)
+                self.is_terminated = True
+                return
             elif sweeping_count == 0 and ai > 0:
                 ax, ay = random.choice(candidate_areas[:ai])
                 a = self.areas[ay][ax]
@@ -603,13 +613,12 @@ class KeepPigeonsAway:
                 a.count.sweep = 1
                 sweeping_ax, sweeping_ay = ax, ay
             
-            logging.info("use {:.3}s".format(time.time() - begin_time))
             try:
                 if not IS_DECIDE_ONLY:
                     self.que_sweeping.put(
                         (sweeping_ax, sweeping_ay), timeout=1)
                 self.que_showing.put(
-                    (self.copy_areas(), detections, fps), timeout=1)
+                    (img, self.copy_areas(), detections, fps), timeout=1)
             except (QueueEmpty, QueueFull) as e:
                 if self.is_terminated:
                     return
@@ -632,19 +641,22 @@ class KeepPigeonsAway:
                 self.open_laser()
                 self.sweep_area(sweeping_ax, sweeping_ay)
             else:
-                time.sleep(1 / 20)  # avoid high CPU usage
+                time.sleep(self.delay_time)  # avoid high CPU usage
     
     def thd_showing_func(self):
         areas, detections, fps = self.areas, None, 10.0
         
         while not self.is_terminated:
-            begin_time = time.time()
-            img = self.get_cap_img(self.showing_w, self.showing_h)
+            if self.que_showing.full():
+                img, areas, detections, fps = self.que_showing.get(timeout=1)
+            else:
+                if self.has_video_in:
+                    time.sleep(self.delay_time)  # avoid high CPU usage
+                    continue
+                img, _ = self.get_cap_img(False)
             if img is None:
                 self.close_video_io()
                 return
-            if self.que_showing.full():
-                areas, detections, fps = self.que_showing.get(timeout=1)
             if self.is_started_detecting:
                 if detections is not None:
                     self.draw_detections(img, detections)
@@ -656,16 +668,12 @@ class KeepPigeonsAway:
                 self.video_out.write(img)
             cv2.imshow("image", img)
             cv2.waitKey(1)
-            
-            logging.info("use {:.3}s".format(time.time() - begin_time))
-            if self.has_video_in:
-                time.sleep(1 / fps)
 
 
 def main():
     random.seed()
     logging.basicConfig(
-        stream=sys.stdout, level=logging.ERROR, datefmt="%H:%M:%S",
+        stream=sys.stdout, level=logging.INFO, datefmt="%H:%M:%S",
         format="%(asctime)s.%(msecs)03d | %(levelname)-5s | "
                "%(threadName)12s -> %(funcName)s: %(message)s")
     
