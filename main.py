@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 from copy import copy
 from enum import Enum, IntEnum, auto
 from queue import Queue
@@ -15,7 +16,7 @@ import cv2
 import darknet
 import keyboard
 
-IS_CHECK_MODE = False
+IS_TEST_NEEDED = False
 IS_DECIDE_ONLY = False
 IS_DETECT_ONLY = False
 
@@ -105,11 +106,10 @@ class Detection:
     x1, x2, y1, y2, cx, cy, ax, ay, rate = -1, -1, -1, -1, -1, -1, -1, -1, 0.0
 
 
-class DriveAwayPigeons:
+class KeepPigeonsAway:
     
-    def __init__(self, split_w: int, split_h: int):
-        self.video_path = ""
-        self.split_w, self.split_h = split_w, split_h
+    def __init__(self, vi: str, vo: str, sw: int, sh: int):
+        self.split_w, self.split_h = sw, sh
         self.laser_pin, self.servo_x_ch, self.servo_y_ch = 18, 1, 0
         self.cap_ratio = 1920 / 1080
         self.font = cv2.FONT_HERSHEY_DUPLEX
@@ -138,8 +138,9 @@ class DriveAwayPigeons:
         self.que_showing = Queue(1)
         
         self.is_started_detecting = False
-        self.cap = \
-            cv2.VideoCapture(0 if not self.video_path else self.video_path)
+        self.has_video_in = vi != ""
+        self.has_video_out = vo != ""
+        self.video_in, self.video_out = self.get_video_io(vi, vo)
         self.thd_showing.start()
         
         self.area_angle_spacing = Angle()
@@ -149,7 +150,7 @@ class DriveAwayPigeons:
         self.darknet_net, self.darknet_net_w, self.darknet_net_h = None, 0, 0
         self.darknet_meta, self.darknet_img = None, None
         self.init_darknet()
-
+        
         if not IS_DETECT_ONLY:
             self.thd_deciding.start()
         if not IS_DECIDE_ONLY:
@@ -158,6 +159,10 @@ class DriveAwayPigeons:
     
     def __del__(self):
         GPIO.cleanup()
+        self.video_in.release()
+        if self.has_video_out:
+            self.video_out.release()
+        cv2.destroyAllWindows()
     
     def make_areas(self) -> List[List[Area]]:
         if IS_DETECT_ONLY:
@@ -180,6 +185,7 @@ class DriveAwayPigeons:
     def init_areas_rect(self):
         if IS_DETECT_ONLY:
             return
+        
         aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
         for ay in range(self.split_h):
             for ax in range(self.split_w):
@@ -196,6 +202,7 @@ class DriveAwayPigeons:
     def init_areas_angle(self):
         if IS_DECIDE_ONLY:
             return
+        
         termios.tcflush(sys.stdin, termios.TCIOFLUSH)
         filepath = input("Load areas angle: ").strip()
         if filepath != "":
@@ -205,6 +212,7 @@ class DriveAwayPigeons:
                     for ax in range(self.split_w):
                         self.areas[ay][ax].angle.x = areas[ay][ax].angle.x
                         self.areas[ay][ax].angle.y = areas[ay][ax].angle.y
+            
             self.init_area_angle_spacing()
             self.init_areas_center_angle()
             self.check_areas_angle()
@@ -238,6 +246,7 @@ class DriveAwayPigeons:
                     a.angle.x = self.arm.current_angles[X]
                     a.angle.y = self.arm.current_angles[Y]
             self.close_laser()
+            
             self.init_area_angle_spacing()
             self.init_areas_center_angle()
             self.check_areas_angle()
@@ -285,9 +294,10 @@ class DriveAwayPigeons:
     def init_laser(self):
         if IS_DECIDE_ONLY:
             return
+        
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(self.laser_pin, GPIO.OUT, initial=GPIO.LOW)
-        if IS_CHECK_MODE:
+        if IS_TEST_NEEDED:
             logging.debug("test start")
             for i in range(0):
                 time.sleep(2)
@@ -308,7 +318,7 @@ class DriveAwayPigeons:
                 d = self.areas[ay][ax].angle.dict()
                 if not d:
                     raise Exception("failed to check areas angle")
-                if IS_CHECK_MODE:
+                if IS_TEST_NEEDED:
                     n = ay * self.split_w + ax
                     logging.debug("check {}: {}".format(n, d))
                     self.arm.rotate(d, False)
@@ -322,6 +332,7 @@ class DriveAwayPigeons:
     def get_arm(self) -> ControllerForPCA9685:
         if IS_DECIDE_ONLY:
             return None
+        
         mg995_sec_per_angle = \
             ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
         mg995_pan = Servo(0.0, 180.0, 180.0, 630.0, 50.0, mg995_sec_per_angle)
@@ -330,8 +341,19 @@ class DriveAwayPigeons:
         chs = {X: self.servo_x_ch, Y: self.servo_y_ch}
         return ControllerForPCA9685(servos, chs, 60.0)
     
+    def get_video_io(self, vi: str, vo: str) -> \
+            (cv2.VideoCapture, cv2.VideoWriter):
+        video_in = cv2.VideoCapture(0 if not vi else vi)
+        video_out = None
+        if self.has_video_out:
+            if not vo.lower().endswith(".mp4"):
+                vo += ".mp4"
+            video_out = cv2.VideoWriter(vo, cv2.VideoWriter_fourcc(*"MP4V"),
+                                        30, (self.showing_w, self.showing_h))
+        return video_in, video_out
+    
     def get_cap_img(self, w: int, h: int) -> numpy.ndarray:
-        _, img = self.cap.read()
+        _, img = self.video_in.read()
         return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
     
     def sweep_area(self, ax: int, ay: int):
@@ -407,10 +429,12 @@ class DriveAwayPigeons:
                    areas: List[List[Area]], is_detecting: bool):
         if areas is None:
             return
+        
         for ay in range(self.split_h):
             for ax in range(self.split_w):
                 a = areas[ay][ax]
                 color = self.detecting_color
+                
                 if is_detecting and a.status != Status.detecting:
                     if a.status == Status.sweeping:
                         color = self.sweeping_color
@@ -436,6 +460,7 @@ class DriveAwayPigeons:
                                 img, "CNF:{:1d}".format(a.count.confirmation),
                                 a.rect.x2 - 1, a.rect.y2 - 1, 1 / 2,
                                 self.count2_color, 8)
+                
                 cv2.rectangle(img, (a.rect.x1, a.rect.y1),
                               (a.rect.x2, a.rect.y2), color, 1)
                 self.draw_text(img, "{:02d}".format(ay * self.split_w + ax),
@@ -458,6 +483,7 @@ class DriveAwayPigeons:
     
     def loop_detecting(self):
         self.is_started_detecting = True
+        
         while True:
             begin_time = time.time()
             img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
@@ -467,6 +493,7 @@ class DriveAwayPigeons:
                 self.darknet_net, self.darknet_meta,
                 self.darknet_img, thresh=0.3)
             detections = self.trans_detections(detections_raw)
+            
             fps = 1 / (time.time() - begin_time)
             if IS_DETECT_ONLY:
                 self.que_showing.put((None, detections, fps))
@@ -480,6 +507,7 @@ class DriveAwayPigeons:
             detected_areas = set()
             for d in detections:
                 detected_areas.add((d.ax, d.ay))
+            
             for ay in range(self.split_h):
                 for ax in range(self.split_w):
                     a = self.areas[ay][ax]
@@ -514,6 +542,7 @@ class DriveAwayPigeons:
                         elif a.status != Status.detecting:
                             a.count.clear()
                             a.status = Status.detecting
+            
             sweeping_ax, sweeping_ay, sweeping_count, ai = -1, -1, 0, 0
             candidate_areas = [(-1, -1)] * self.split_w * self.split_h
             for ay in range(self.split_h):
@@ -535,6 +564,7 @@ class DriveAwayPigeons:
                 a.status = Status.sweeping
                 a.count.sweep = 1
                 sweeping_ax, sweeping_ay = ax, ay
+            
             logging.info("use {:.3}s".format(time.time() - begin_time))
             if not IS_DECIDE_ONLY:
                 self.que_sweeping.put((sweeping_ax, sweeping_ay))
@@ -542,6 +572,7 @@ class DriveAwayPigeons:
     
     def thd_sweeping_func(self):
         sweeping_ax, sweeping_ay = -1, -1
+        
         while True:
             if not self.que_sweeping.empty():
                 ax, ay = self.que_sweeping.get()
@@ -560,6 +591,7 @@ class DriveAwayPigeons:
     
     def thd_showing_func(self):
         areas, detections, fps = self.areas, None, 10.0
+        
         while True:
             begin_time = time.time()
             img = self.get_cap_img(self.showing_w, self.showing_h)
@@ -574,8 +606,9 @@ class DriveAwayPigeons:
                 self.draw_areas(img, areas, False)
             cv2.imshow("image", img)
             cv2.waitKey(1)
+            
             logging.info("use {:.3}s".format(time.time() - begin_time))
-            if self.video_path != "":
+            if self.has_video_in:
                 time.sleep(1 / fps)
 
 
@@ -586,16 +619,22 @@ def main():
         format="%(asctime)s.%(msecs)03d | %(levelname)-5s | "
                "%(threadName)12s -> %(funcName)s: %(message)s")
     
-    split_w, split_h = 4, 3
-    if len(sys.argv) == 2:
-        split_w, split_h = int(sys.argv[1]), int(sys.argv[1])
-    elif len(sys.argv) >= 3:
-        split_w, split_h = int(sys.argv[1]), int(sys.argv[2])
-    d = None
+    p = ArgumentParser(prog="sudo python3 main.py")
+    p.add_argument("-vi", "--video-input", dest="vi", type=str, default="",
+                   help="input video's path, ignore it to using videostream")
+    p.add_argument("-vo", "--video-output", dest="vo", type=str, default="",
+                   help="output mp4 video's path, ignore it when no output")
+    p.add_argument("-sw", "--spilt-width", dest="sw", type=int, default=4,
+                   help="spilt width of sweeping areas")
+    p.add_argument("-sh", "--spilt-height", dest="sh", type=int, default=3,
+                   help="spilt height of sweeping areas")
+    args = p.parse_args()
+    
+    kpa: KeepPigeonsAway = None
     try:
-        d = DriveAwayPigeons(split_w, split_h)
+        kpa = KeepPigeonsAway(args.vi, args.vo, args.sw, args.sh)
     except KeyboardInterrupt:
-        del d
+        del kpa
 
 
 if __name__ == '__main__':
