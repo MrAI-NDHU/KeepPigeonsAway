@@ -15,8 +15,9 @@ import cv2
 import darknet
 import keyboard
 
-TEST_DEVICE = False
-TEST_DETECT_ONLY = False
+IS_CHECK_MODE = False
+IS_DECIDE_ONLY = False
+IS_DETECT_ONLY = False
 
 try:
     from Jetson import GPIO
@@ -24,7 +25,9 @@ try:
     from servo.controller import ControllerForPCA9685
     import termios
 except ModuleNotFoundError:
-    TEST_DETECT_ONLY = True
+    IS_DECIDE_ONLY = True
+if IS_DETECT_ONLY:
+    IS_DECIDE_ONLY = True
 
 X, Y = "x", "y"
 C_RED = (0x00, 0x00, 0xFF)
@@ -146,15 +149,19 @@ class DriveAwayPigeons:
         self.darknet_net, self.darknet_net_w, self.darknet_net_h = None, 0, 0
         self.darknet_meta, self.darknet_img = None, None
         self.init_darknet()
-        
-        self.thd_deciding.start()
-        self.thd_sweeping.start()
+
+        if not IS_DETECT_ONLY:
+            self.thd_deciding.start()
+        if not IS_DECIDE_ONLY:
+            self.thd_sweeping.start()
         self.loop_detecting()
     
     def __del__(self):
         GPIO.cleanup()
     
     def make_areas(self) -> List[List[Area]]:
+        if IS_DETECT_ONLY:
+            return None
         return [[Area()] * self.split_w for _ in range(self.split_h)]
     
     def init_darknet(self):
@@ -171,6 +178,8 @@ class DriveAwayPigeons:
             self.darknet_net_w, self.darknet_net_h, 3)
     
     def init_areas_rect(self):
+        if IS_DETECT_ONLY:
+            return
         aw, ah = self.showing_w / self.split_w, self.showing_h / self.split_h
         for ay in range(self.split_h):
             for ax in range(self.split_w):
@@ -185,7 +194,7 @@ class DriveAwayPigeons:
                 a.rect.cy = (y1 + y2 - 1) / 2
     
     def init_areas_angle(self):
-        if TEST_DETECT_ONLY:
+        if IS_DECIDE_ONLY:
             return
         termios.tcflush(sys.stdin, termios.TCIOFLUSH)
         filepath = input("Load areas angle: ").strip()
@@ -274,11 +283,11 @@ class DriveAwayPigeons:
         self.areas_canter_angle.y = (ay1_ay + ay2_ay) / 2
     
     def init_laser(self):
-        if TEST_DETECT_ONLY:
+        if IS_DECIDE_ONLY:
             return
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(self.laser_pin, GPIO.OUT, initial=GPIO.LOW)
-        if TEST_DEVICE:
+        if IS_CHECK_MODE:
             logging.debug("test start")
             for i in range(0):
                 time.sleep(2)
@@ -288,13 +297,9 @@ class DriveAwayPigeons:
             logging.debug("test done")
     
     def open_laser(self):
-        if TEST_DETECT_ONLY:
-            return
         GPIO.output(self.laser_pin, GPIO.HIGH)
     
     def close_laser(self):
-        if TEST_DETECT_ONLY:
-            return
         GPIO.output(self.laser_pin, GPIO.LOW)
     
     def check_areas_angle(self):
@@ -303,7 +308,7 @@ class DriveAwayPigeons:
                 d = self.areas[ay][ax].angle.dict()
                 if not d:
                     raise Exception("failed to check areas angle")
-                if TEST_DEVICE:
+                if IS_CHECK_MODE:
                     n = ay * self.split_w + ax
                     logging.debug("check {}: {}".format(n, d))
                     self.arm.rotate(d, False)
@@ -315,7 +320,7 @@ class DriveAwayPigeons:
         self.arm.rotate(self.areas_canter_angle.dict(), False)
     
     def get_arm(self) -> ControllerForPCA9685:
-        if TEST_DETECT_ONLY:
+        if IS_DECIDE_ONLY:
             return None
         mg995_sec_per_angle = \
             ((0.16 - 0.2) / (6.0 - 4.8) * (5.0 - 4.8) + 0.2) / 60.0
@@ -330,9 +335,6 @@ class DriveAwayPigeons:
         return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
     
     def sweep_area(self, ax: int, ay: int):
-        if TEST_DETECT_ONLY:
-            time.sleep(1 / 20)
-            return
         area_angle = self.areas[ay][ax].angle
         x = random.uniform(
             area_angle.x - self.area_angle_spacing.x / 2,
@@ -403,6 +405,8 @@ class DriveAwayPigeons:
     
     def draw_areas(self, img: numpy.ndarray,
                    areas: List[List[Area]], is_detecting: bool):
+        if areas is None:
+            return
         for ay in range(self.split_h):
             for ax in range(self.split_w):
                 a = areas[ay][ax]
@@ -462,14 +466,17 @@ class DriveAwayPigeons:
             detections_raw = darknet.detect_image(
                 self.darknet_net, self.darknet_meta,
                 self.darknet_img, thresh=0.3)
+            detections = self.trans_detections(detections_raw)
             fps = 1 / (time.time() - begin_time)
-            self.que_deciding.put((detections_raw, fps))
+            if IS_DETECT_ONLY:
+                self.que_showing.put((None, detections, fps))
+            else:
+                self.que_deciding.put((detections, fps))
     
     def thd_deciding_func(self):
         while True:
             begin_time = time.time()
-            detections_raw, fps = self.que_deciding.get()
-            detections = self.trans_detections(detections_raw)
+            detections, fps = self.que_deciding.get()
             detected_areas = set()
             for d in detections:
                 detected_areas.add((d.ax, d.ay))
@@ -529,7 +536,8 @@ class DriveAwayPigeons:
                 a.count.sweep = 1
                 sweeping_ax, sweeping_ay = ax, ay
             logging.info("use {:.3}s".format(time.time() - begin_time))
-            self.que_sweeping.put((sweeping_ax, sweeping_ay))
+            if not IS_DECIDE_ONLY:
+                self.que_sweeping.put((sweeping_ax, sweeping_ay))
             self.que_showing.put((self.copy_areas(), detections, fps))
     
     def thd_sweeping_func(self):
