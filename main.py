@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from copy import copy
 from enum import auto, Enum, IntEnum
+from queue import Empty as QueueEmpty
 from queue import Full as QueueFull
 from queue import Queue
 from threading import Thread
@@ -165,21 +166,11 @@ class KeepPigeonsAway:
             self.loop_detecting()
         except KeyboardInterrupt:
             self.is_terminated = True
-            try:
-                if not IS_DETECT_ONLY:
-                    self.que_deciding.put(None, False)
-                if not IS_DECIDE_ONLY:
-                    self.que_sweeping.put(None, False)
-                self.que_showing.put(None, False)
-            except QueueFull:
-                pass
     
     def __del__(self):
         if not IS_DECIDE_ONLY:
             GPIO.cleanup()
-        self.video_in.release()
-        if self.has_video_out:
-            self.video_out.release()
+        self.close_video_io()
         cv2.destroyAllWindows()
     
     def make_areas(self) -> List[List[Area]]:
@@ -372,8 +363,17 @@ class KeepPigeonsAway:
         return video_in, video_out
     
     def get_cap_img(self, w: int, h: int) -> numpy.ndarray:
-        _, img = self.video_in.read()
+        ret, img = self.video_in.read()
+        if not ret:
+            return None
         return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+    
+    def close_video_io(self):
+        self.is_terminated = True
+        if self.video_in.isOpened():
+            self.video_in.release()
+        if self.has_video_out and self.video_out.isOpened():
+            self.video_out.release()
     
     def sweep_area(self, ax: int, ay: int):
         area_angle = self.areas[ay][ax].angle
@@ -509,9 +509,12 @@ class KeepPigeonsAway:
     def loop_detecting(self):
         self.is_started_detecting = True
         
-        while True:
+        while not self.is_terminated:
             begin_time = time.time()
             img = self.get_cap_img(self.darknet_net_w, self.darknet_net_h)
+            if img is None:
+                self.close_video_io()
+                return
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             darknet.copy_image_from_bytes(self.darknet_img, img.tobytes())
             detections_raw = darknet.detect_image(
@@ -520,21 +523,25 @@ class KeepPigeonsAway:
             detections = self.trans_detections(detections_raw)
             
             fps = 1 / (time.time() - begin_time)
-            if IS_DETECT_ONLY:
-                self.que_showing.put((None, detections, fps))
-            else:
-                self.que_deciding.put((detections, fps))
+            try:
+                if IS_DETECT_ONLY:
+                    self.que_showing.put((None, detections, fps), timeout=1)
+                else:
+                    self.que_deciding.put((detections, fps), timeout=1)
+            except (QueueEmpty, QueueFull) as e:
+                if self.is_terminated:
+                    return
+                raise e
     
     def thd_deciding_func(self):
-        while True:
-            if self.is_terminated:
-                return
-            
+        while not self.is_terminated:
             begin_time = time.time()
-            val = self.que_deciding.get()
-            if val is None:
-                return
-            detections, fps = val
+            try:
+                detections, fps = self.que_deciding.get(timeout=1)
+            except (QueueEmpty, QueueFull) as e:
+                if self.is_terminated:
+                    return
+                raise e
             detected_areas = set()
             for d in detections:
                 detected_areas.add((d.ax, d.ay))
@@ -597,22 +604,23 @@ class KeepPigeonsAway:
                 sweeping_ax, sweeping_ay = ax, ay
             
             logging.info("use {:.3}s".format(time.time() - begin_time))
-            if not IS_DECIDE_ONLY:
-                self.que_sweeping.put((sweeping_ax, sweeping_ay))
-            self.que_showing.put((self.copy_areas(), detections, fps))
+            try:
+                if not IS_DECIDE_ONLY:
+                    self.que_sweeping.put(
+                        (sweeping_ax, sweeping_ay), timeout=1)
+                self.que_showing.put(
+                    (self.copy_areas(), detections, fps), timeout=1)
+            except (QueueEmpty, QueueFull) as e:
+                if self.is_terminated:
+                    return
+                raise e
     
     def thd_sweeping_func(self):
         sweeping_ax, sweeping_ay = -1, -1
         
-        while True:
-            if self.is_terminated:
-                return
-            
-            if not self.que_sweeping.empty():
-                val = self.que_sweeping.get()
-                if val is None:
-                    return
-                ax, ay = val
+        while not self.is_terminated:
+            if self.que_sweeping.full():
+                ax, ay = self.que_sweeping.get(timeout=1)
                 if sweeping_ax != ax or sweeping_ay != ay:
                     self.close_laser()
                     if ax >= 0 and ay >= 0:
@@ -629,17 +637,14 @@ class KeepPigeonsAway:
     def thd_showing_func(self):
         areas, detections, fps = self.areas, None, 10.0
         
-        while True:
-            if self.is_terminated:
-                return
-            
+        while not self.is_terminated:
             begin_time = time.time()
             img = self.get_cap_img(self.showing_w, self.showing_h)
-            if not self.que_showing.empty():
-                val = self.que_showing.get()
-                if val is None:
-                    return
-                areas, detections, fps = val
+            if img is None:
+                self.close_video_io()
+                return
+            if self.que_showing.full():
+                areas, detections, fps = self.que_showing.get(timeout=1)
             if self.is_started_detecting:
                 if detections is not None:
                     self.draw_detections(img, detections)
@@ -675,11 +680,7 @@ def main():
                    help="spilt height of sweeping areas")
     args = p.parse_args()
     
-    kpa: KeepPigeonsAway = None
-    try:
-        kpa = KeepPigeonsAway(args.vi, args.vo, args.sw, args.sh)
-    except KeyboardInterrupt:
-        del kpa
+    KeepPigeonsAway(args.vi, args.vo, args.sw, args.sh)
 
 
 if __name__ == '__main__':
