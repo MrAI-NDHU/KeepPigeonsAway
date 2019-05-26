@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from copy import copy
-from enum import Enum, IntEnum, auto
+from enum import auto, Enum, IntEnum
+from queue import Full as QueueFull
 from queue import Queue
 from threading import Thread
 from typing import Dict, List, Tuple
@@ -21,11 +22,11 @@ IS_DECIDE_ONLY = False
 IS_DETECT_ONLY = False
 
 try:
-    from Jetson import GPIO
     from servo import Servo
     from servo.controller import ControllerForPCA9685
+    from Jetson import GPIO
     import termios
-except ModuleNotFoundError:
+except:
     IS_DECIDE_ONLY = True
 if IS_DETECT_ONLY:
     IS_DECIDE_ONLY = True
@@ -96,14 +97,18 @@ class Limit(IntEnum):
 
 
 class Area:
-    rect = Rect()
-    angle = Angle()
-    status = Status.detecting
-    count = Count()
+    def __init__(self):
+        self.rect = Rect()
+        self.angle = Angle()
+        self.status = Status.detecting
+        self.count = Count()
 
 
 class Detection:
-    x1, x2, y1, y2, cx, cy, ax, ay, rate = -1, -1, -1, -1, -1, -1, -1, -1, 0.0
+    def __init__(self):
+        self.x1, self.x2, self.y1, self.y2 = -1, -1, -1, -1
+        self.cx, self.cy, self.ax, self.ay = -1, -1, -1, -1
+        self.rate = 0.0
 
 
 class KeepPigeonsAway:
@@ -138,6 +143,7 @@ class KeepPigeonsAway:
         self.que_showing = Queue(1)
         
         self.is_started_detecting = False
+        self.is_terminated = False
         self.has_video_in = vi != ""
         self.has_video_out = vo != ""
         self.video_in, self.video_out = self.get_video_io(vi, vo)
@@ -155,10 +161,22 @@ class KeepPigeonsAway:
             self.thd_deciding.start()
         if not IS_DECIDE_ONLY:
             self.thd_sweeping.start()
-        self.loop_detecting()
+        try:
+            self.loop_detecting()
+        except KeyboardInterrupt:
+            self.is_terminated = True
+            try:
+                if not IS_DETECT_ONLY:
+                    self.que_deciding.put(None, False)
+                if not IS_DECIDE_ONLY:
+                    self.que_sweeping.put(None, False)
+                self.que_showing.put(None, False)
+            except QueueFull:
+                pass
     
     def __del__(self):
-        GPIO.cleanup()
+        if not IS_DECIDE_ONLY:
+            GPIO.cleanup()
         self.video_in.release()
         if self.has_video_out:
             self.video_out.release()
@@ -167,7 +185,8 @@ class KeepPigeonsAway:
     def make_areas(self) -> List[List[Area]]:
         if IS_DETECT_ONLY:
             return None
-        return [[Area()] * self.split_w for _ in range(self.split_h)]
+        return [[Area() for _ in range(self.split_w)]
+                for _ in range(self.split_h)]
     
     def init_darknet(self):
         config_path = "./darknet/pigeons_cfg/yolov3-tiny-pigeons.cfg"
@@ -348,8 +367,8 @@ class KeepPigeonsAway:
         if self.has_video_out:
             if not vo.lower().endswith(".mp4"):
                 vo += ".mp4"
-            video_out = cv2.VideoWriter(vo, cv2.VideoWriter_fourcc(*"MP4V"),
-                                        30, (self.showing_w, self.showing_h))
+            video_out = cv2.VideoWriter(vo, cv2.VideoWriter_fourcc(*"mp4v"),
+                                        10, (self.showing_w, self.showing_h))
         return video_in, video_out
     
     def get_cap_img(self, w: int, h: int) -> numpy.ndarray:
@@ -380,6 +399,9 @@ class KeepPigeonsAway:
             d.x1, d.y1 = int(round(x - (w / 2))), int(round(y - (h / 2)))
             d.x2, d.y2 = int(round(x + (w / 2))), int(round(y + (h / 2)))
             d.cx, d.cy = int(round(x)), int(round(y))
+            
+            if IS_DETECT_ONLY:
+                continue
             dist2 = sys.maxsize
             for ay in range(0, self.split_h):
                 for ax in range(0, self.split_w):
@@ -415,11 +437,14 @@ class KeepPigeonsAway:
         color, padding, size = self.others_color, 1, 10
         for d in detections:
             cv2.rectangle(img, (d.x1, d.y1), (d.x2, d.y2), color, 1)
+            self.draw_text(img, "{:5.2f}%".format(d.rate * 100),
+                           d.cx, d.y1 - 1, 1 / 4, self.others_color, 7)
+            
+            if IS_DETECT_ONLY:
+                continue
             a = self.areas[d.ay][d.ax]
             cx, cy = int(round(a.rect.cx)), int(round(a.rect.cy))
             cv2.arrowedLine(img, (d.cx, d.cy), (cx, cy), color, 1, cv2.LINE_AA)
-            self.draw_text(img, "{:5.2f}%".format(d.rate * 100),
-                           d.cx, d.y1 - 1, 1 / 4, self.others_color, 7)
     
     def draw_fps(self, img: numpy.ndarray, fps: float):
         self.draw_text(img, "FPS:{:05.2f}".format(fps),
@@ -502,8 +527,14 @@ class KeepPigeonsAway:
     
     def thd_deciding_func(self):
         while True:
+            if self.is_terminated:
+                return
+            
             begin_time = time.time()
-            detections, fps = self.que_deciding.get()
+            val = self.que_deciding.get()
+            if val is None:
+                return
+            detections, fps = val
             detected_areas = set()
             for d in detections:
                 detected_areas.add((d.ax, d.ay))
@@ -558,7 +589,7 @@ class KeepPigeonsAway:
                 logging.error("sweeping status must be 1")
                 exit(1)
             elif sweeping_count == 0 and ai > 0:
-                ax, ay = random.choice(list(candidate_areas))
+                ax, ay = random.choice(candidate_areas[:ai])
                 a = self.areas[ay][ax]
                 a.count.clear()
                 a.status = Status.sweeping
@@ -574,8 +605,14 @@ class KeepPigeonsAway:
         sweeping_ax, sweeping_ay = -1, -1
         
         while True:
+            if self.is_terminated:
+                return
+            
             if not self.que_sweeping.empty():
-                ax, ay = self.que_sweeping.get()
+                val = self.que_sweeping.get()
+                if val is None:
+                    return
+                ax, ay = val
                 if sweeping_ax != ax or sweeping_ay != ay:
                     self.close_laser()
                     if ax >= 0 and ay >= 0:
@@ -593,10 +630,16 @@ class KeepPigeonsAway:
         areas, detections, fps = self.areas, None, 10.0
         
         while True:
+            if self.is_terminated:
+                return
+            
             begin_time = time.time()
             img = self.get_cap_img(self.showing_w, self.showing_h)
             if not self.que_showing.empty():
-                areas, detections, fps = self.que_showing.get()
+                val = self.que_showing.get()
+                if val is None:
+                    return
+                areas, detections, fps = val
             if self.is_started_detecting:
                 if detections is not None:
                     self.draw_detections(img, detections)
@@ -604,6 +647,8 @@ class KeepPigeonsAway:
                 self.draw_areas(img, areas, True)
             else:
                 self.draw_areas(img, areas, False)
+            if self.has_video_out:
+                self.video_out.write(img)
             cv2.imshow("image", img)
             cv2.waitKey(1)
             
